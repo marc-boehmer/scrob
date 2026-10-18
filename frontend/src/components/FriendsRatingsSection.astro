@@ -1,0 +1,124 @@
+---
+import { api, type FriendRating } from "../lib/api";
+
+interface Props {
+  mediaType: string;
+  tmdbId?: number | null;
+  tvdbId?: number | null;
+  mediaId?: number | null;
+  seasonNumber?: number;
+  episodeNumber?: number;
+  episodeOrder?: string;
+}
+
+const { mediaType, tvdbId, mediaId, seasonNumber, episodeNumber, episodeOrder } = Astro.props;
+const tmdbId = Astro.props.tmdbId ?? undefined;
+const queryTvdbId = tmdbId ? undefined : (tvdbId ?? undefined);
+const token = Astro.cookies.get("token")?.value;
+const user = Astro.locals.user;
+
+let ratings: FriendRating[] = [];
+if (user && token) {
+  try {
+    const res = await api.ratings.friends({
+      media_type: mediaType,
+      tmdb_id: tmdbId,
+      tvdb_id: queryTvdbId,
+      media_id: mediaId ?? undefined,
+      season_number: seasonNumber,
+      episode_number: episodeNumber,
+      episode_order: episodeOrder,
+    }, token);
+    ratings = res.ratings || [];
+  } catch (e) {
+    console.error("Failed to load friends ratings", e);
+  }
+}
+
+const avgRating = ratings.length > 0
+  ? (ratings.reduce((acc, r) => acc + r.rating, 0) / ratings.length).toFixed(1)
+  : null;
+---
+
+{user && ratings.length > 0 && (
+  <div class="w-full xl:w-80 shrink-0 bg-zinc-900/70 border border-zinc-800/80 backdrop-blur-md rounded-2xl p-4 shadow-xl flex flex-col gap-3 my-2 xl:my-0" id="friends-ratings-widget">
+    <div class="flex items-center justify-between pb-2 border-b border-zinc-800/60">
+      <div class="flex items-center gap-2">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="text-yellow-500">
+          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+          <circle cx="9" cy="7" r="4"/>
+          <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+          <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+        </svg>
+        <span class="text-xs font-black text-zinc-200 uppercase tracking-wider">Friends' Ratings</span>
+        <span class="text-[10px] font-bold text-zinc-400 bg-zinc-800 px-2 py-0.5 rounded-full border border-zinc-700">
+          {ratings.length}
+        </span>
+      </div>
+
+      {avgRating && (
+        <div class="flex items-center gap-1.5 bg-yellow-500/10 border border-yellow-500/20 px-2.5 py-0.5 rounded-lg">
+          <span class="text-[10px] font-bold text-yellow-500/90 uppercase tracking-wider">Avg</span>
+          <span class="text-xs font-black text-yellow-400 flex items-center gap-0.5">
+            <span>★</span> {avgRating}
+          </span>
+        </div>
+      )}
+    </div>
+
+    <div class="flex flex-col gap-2.5 max-h-56 overflow-y-auto pr-1">
+      {ratings.map((r) => (
+        <div class="p-2.5 rounded-xl bg-zinc-950/60 border border-zinc-800/60 hover:border-zinc-700 transition-colors flex flex-col gap-2">
+          <div class="flex items-center justify-between gap-3">
+            <div class="flex items-center gap-2.5 min-w-0">
+              <a
+                href={`/profile/${r.user_id}`}
+                class="w-8 h-8 rounded-xl bg-gradient-to-br from-zinc-800 to-zinc-900 border border-zinc-700 overflow-hidden flex items-center justify-center text-xs font-black text-zinc-400 shrink-0 shadow hover:border-blue-500 transition-colors"
+              >
+                {r.avatar_url ? (
+                  <img src={`/api/proxy${r.avatar_url}`} alt={r.display_name} class="w-full h-full object-cover" loading="lazy" />
+                ) : (
+                  r.display_name[0]?.toUpperCase() || "?"
+                )}
+              </a>
+              <div class="min-w-0">
+                <a
+                  href={`/profile/${r.user_id}`}
+                  class="font-bold text-zinc-200 hover:text-blue-400 transition-colors truncate block text-xs leading-tight"
+                >
+                  {r.display_name}
+                </a>
+                <span class="text-[10px] text-zinc-500 font-medium block truncate">
+                  @{r.username}
+                </span>
+              </div>
+            </div>
+
+            <div class="flex flex-col items-end shrink-0">
+              <span class="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 font-black text-xs shadow-sm">
+                <span class="text-[10px]">★</span> {r.rating.toFixed(1)}
+              </span>
+              <span class="text-[9px] font-medium text-zinc-500 mt-0.5">
+                {new Date(r.rated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+              </span>
+            </div>
+          </div>
+
+          {r.season_number != null && (
+            <div class="flex items-center gap-1">
+              <span class="text-[9px] font-bold text-blue-400 uppercase tracking-widest px-1.5 py-0.5 bg-blue-500/10 border border-blue-500/20 rounded">
+                Season {r.season_number}
+              </span>
+            </div>
+          )}
+
+          {r.review && (
+            <div class="p-2 rounded-lg bg-zinc-900/80 border border-zinc-800/80 text-zinc-300 text-xs leading-relaxed whitespace-pre-wrap font-normal">
+              "{r.review}"
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  </div>
+)}

@@ -1188,6 +1188,19 @@ export interface UserStats {
   weekday_activity: { day: string; avg: number }[];
 }
 
+export interface FriendRating {
+  id: number;
+  user_id: number;
+  username: string;
+  display_name: string;
+  avatar_url?: string | null;
+  rating: number;
+  review?: string | null;
+  season_number?: number | null;
+  episode_order?: string | null;
+  rated_at: string;
+}
+
 export interface Comment {
   id: number;
   user_id: number;
@@ -1656,6 +1669,11 @@ export const api = {
       get<{ results: ProfileWatchedItem[]; page: number; total_pages: number; total_results: number }>(`/profile/${userId}/recently-watched-movies`, { page }, token),
     recentlyWatchedShows: (userId: number, page: number = 1, token?: string) =>
       get<{ results: ProfileWatchedItem[]; page: number; total_pages: number; total_results: number }>(`/profile/${userId}/recently-watched-shows`, { page }, token),
+  },
+
+  ratings: {
+    friends: (params: { media_type: string; tmdb_id?: number; tvdb_id?: number; media_id?: number; season_number?: number; episode_number?: number; episode_order?: string }, token: string) =>
+      get<{ ratings: FriendRating[] }>("/ratings/friends", params, token),
   },
 
   comments: {

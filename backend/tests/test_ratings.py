@@ -120,5 +120,80 @@ class FormatRatingTests(unittest.TestCase):
         self.assertIsNone(payload["media"]["tmdb_id"])
 
 
+class _FakeUser:
+    def __init__(self, id: int = 1, username: str = "alice", role: str = "user") -> None:
+        self.id = id
+        self.username = username
+        self.role = role
+
+
+class _FakeProfile:
+    def __init__(self, display_name: str = "Alice", avatar_path: str = None) -> None:
+        self.display_name = display_name
+        self.avatar_path = avatar_path
+
+
+class GetFriendsRatingsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_invalid_media_type_raises_400(self) -> None:
+        db = _FakeDB([])
+        user = _FakeUser()
+        with self.assertRaises(ratings_router.HTTPException) as ctx:
+            await ratings_router.get_friends_ratings("invalid_type", tmdb_id=123, db=db, current_user=user)
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_missing_ids_raises_400(self) -> None:
+        db = _FakeDB([])
+        user = _FakeUser()
+        with self.assertRaises(ratings_router.HTTPException) as ctx:
+            await ratings_router.get_friends_ratings("movie", db=db, current_user=user)
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_media_not_found_returns_empty_list(self) -> None:
+        db = _FakeDB([])
+        user = _FakeUser()
+        res = await ratings_router.get_friends_ratings("movie", tmdb_id=999999, db=db, current_user=user)
+        self.assertEqual(res, {"ratings": []})
+
+    async def test_media_found_returns_friends_ratings(self) -> None:
+        media = _FakeRatedMedia(id=10, tmdb_id=550)
+        rating = _FakeRating(id=1, user_id=2, rating=9.5, review="Masterpiece!", rated_at=datetime(2026, 10, 18, 12, 0, 0))
+        friend_user = _FakeUser(id=2, username="bob")
+        friend_profile = _FakeProfile(display_name="Bob Builder", avatar_path="avatar.png")
+
+        class _ResultWithAll:
+            def __init__(self, rows):
+                self._rows = rows
+            def scalars(self):
+                return _FakeScalars(self._rows)
+            def all(self):
+                return self._rows
+
+        class _FriendsTestDB:
+            def __init__(self):
+                self.calls = 0
+            async def execute(self, stmt):
+                self.calls += 1
+                if self.calls == 1:
+                    # find_media query
+                    return _ResultWithAll([media])
+                else:
+                    # friends ratings query
+                    return _ResultWithAll([(rating, friend_user, friend_profile)])
+
+        db = _FriendsTestDB()
+        user = _FakeUser(id=1, username="alice")
+        res = await ratings_router.get_friends_ratings("movie", tmdb_id=550, db=db, current_user=user)
+        self.assertEqual(len(res["ratings"]), 1)
+        r = res["ratings"][0]
+        self.assertEqual(r["id"], 1)
+        self.assertEqual(r["user_id"], 2)
+        self.assertEqual(r["username"], "bob")
+        self.assertEqual(r["display_name"], "Bob Builder")
+        self.assertEqual(r["avatar_url"], "/profile/avatar/2")
+        self.assertEqual(r["rating"], 9.5)
+        self.assertEqual(r["review"], "Masterpiece!")
+        self.assertEqual(r["rated_at"], "2026-10-18T12:00:00")
+
+
 if __name__ == "__main__":
     unittest.main()
