@@ -36,6 +36,10 @@ interface Props {
   ratingTitle?: string;
   ratingSubtitle?: string;
   ratingPosterPath?: string | null;
+  showWatchlist?: boolean;
+  inWatchlist?: boolean;
+  posterPath?: string | null;
+  releaseDate?: string | null;
 }
 
 const {
@@ -71,6 +75,10 @@ const {
   ratingTitle,
   ratingSubtitle,
   ratingPosterPath,
+  showWatchlist = false,
+  inWatchlist = false,
+  posterPath = null,
+  releaseDate = null,
 } = Astro.props;
 
 const isSeries = mediaType === "series";
@@ -113,6 +121,9 @@ const rateCls     = userRating != null
 const collectedCls = inLibrary
   ? "bg-purple-500/50 text-purple-300 hover:bg-purple-400/50"
   : "bg-zinc-800 text-zinc-500 hover:bg-purple-500/50 hover:text-purple-400";
+const watchlistCls = inWatchlist
+  ? "bg-amber-500/50 text-amber-300 hover:bg-amber-400/50"
+  : "bg-zinc-800 text-zinc-500 hover:bg-amber-400/50 hover:text-amber-400";
 
 const rewatchActive = !!rewatch;
 const rewatchCls = rewatchActive
@@ -161,6 +172,9 @@ const dropTitle = dropped
   data-rate-subtitle={ratingSubtitleFull}
   data-rate-poster={ratingPosterPath ?? ""}
   data-rate-landscape={mediaType === "episode" ? "true" : ""}
+  data-title={ratingTitle ?? ""}
+  data-poster-path={posterPath ?? ""}
+  data-air-date={releaseDate ?? ""}
   class="flex w-fit"
 >
   <div class="flex flex-row rounded-2xl overflow-hidden border border-zinc-800 shadow-lg min-h-[52px] md:min-h-[64px] w-fit">
@@ -260,6 +274,22 @@ const dropTitle = dropped
         </svg>
         <span class={label}>{isSeries ? `${collectionPct}%` : "Collected"}</span>
         {isSeries && <span class="md:hidden text-[9px] font-bold leading-none">{collectionPct}%</span>}
+      </button>
+    )}
+
+    {showWatchlist && (
+      <button
+        data-action="watchlist"
+        data-watchlist-style="detail"
+        data-in-watchlist={String(inWatchlist)}
+        data-state={inWatchlist ? "active" : "inactive"}
+        title={inWatchlist ? "Remove from watchlist" : "Add to watchlist"}
+        class={`${btn} ${btnW} border-l border-zinc-800/60 ${watchlistCls}`}
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill={inWatchlist ? "currentColor" : "none"} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+        </svg>
+        <span class={label}>Watchlist</span>
       </button>
     )}
 

@@ -9,9 +9,11 @@ import { episodeCode } from "../lib/media-format";
 
 interface Props {
   item: MediaItem;
+  showWatchlistAction?: boolean;
+  isWatchlistItem?: boolean;
 }
 
-const { item } = Astro.props;
+const { item, showWatchlistAction = false, isWatchlistItem = false } = Astro.props;
 const { user } = Astro.locals;
 
 const isPerson = item.type === "person";
@@ -48,6 +50,7 @@ const inLists = item.in_lists ?? [];
 const collectionPct = item.collection_pct ?? (item.in_library ? 100 : 0);
 const watchPct = item.watch_pct ?? (item.watched ? 100 : 0);
 const inLibrary = item.in_library ?? false;
+const isInWatchlist = isWatchlistItem || (item.in_watchlist ?? false);
 ---
 
 <div
@@ -56,6 +59,9 @@ const inLibrary = item.in_library ?? false;
   data-id={item.id ? String(item.id) : ""}
   data-tmdb-id={item.tmdb_id ? String(item.tmdb_id) : ""}
   data-media-type={item.type}
+  data-title={item.title}
+  data-poster-path={item.poster_path ?? ""}
+  data-in-watchlist={String(isInWatchlist)}
   data-show-tmdb-id={item.show_tmdb_id ? String(item.show_tmdb_id) : ""}
   data-show-tvdb-id={item.show_tvdb_id ? String(item.show_tvdb_id) : ""}
   data-season={item.season_number != null ? String(item.season_number) : ""}
@@ -122,14 +128,16 @@ const inLibrary = item.in_library ?? false;
 
   <!-- Action bar (below poster, above info) -->
   {showActionBar && (
-    <CardActionBar
-      watched={watched}
-      inLists={inLists}
-      inLibrary={inLibrary}
-      collectionPct={collectionPct}
-      watchPct={watchPct}
-      isSeries={isPercentageStyle}
-    />
+      <CardActionBar
+          watched={watched}
+          inLists={inLists}
+          inLibrary={inLibrary}
+          collectionPct={collectionPct}
+          watchPct={watchPct}
+          isSeries={isPercentageStyle}
+          showWatchlist={showWatchlistAction && (item.type === "movie" || (item.type === "series" && item.season_number == null))}
+          inWatchlist={isInWatchlist}
+      />
   )}
 
   <slot />
@@ -172,4 +180,3 @@ const inLibrary = item.in_library ?? false;
     </div>
   )}
 </div>
-

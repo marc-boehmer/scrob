@@ -738,6 +738,7 @@ export interface MediaItem {
   // Card action state
   watched?: boolean;
   in_lists?: number[];
+  in_watchlist?: boolean;
   collection_pct?: number;
   watch_pct?: number;
   watch_started?: boolean;
@@ -857,6 +858,53 @@ export interface DroppedMovie {
   year: string | null;
 }
 
+// GET /watchlist — same {movies, shows} split as the dropped page, so the
+// watchlist page can reuse the same grid/cards. Enrich fields below the
+// divider are filled by enrich_with_state on the backend.
+export interface WatchlistMovie {
+  id: number;
+  tmdb_id: number | null;
+  tvdb_id: number | null;
+  imdb_id: string | null;
+  type: "movie";
+  title: string;
+  overview: string | null;
+  poster_path: string | null;
+  backdrop_path: string | null;
+  release_date: string | null;
+  tmdb_rating: number | null;
+  added_at: string | null;
+  in_watchlist?: boolean;
+  watched?: boolean;
+  in_library?: boolean;
+  collection_pct?: number;
+  user_rating?: number | null;
+}
+
+export interface WatchlistShow {
+  id: number;
+  tmdb_id: number | null;
+  tvdb_id: number | null;
+  imdb_id: string | null;
+  type: "series";
+  title: string;
+  overview: string | null;
+  poster_path: string | null;
+  backdrop_path: string | null;
+  release_date: string | null;
+  tmdb_rating: number | null;
+  status: string | null;
+  seasons: { season_number: number; episode_count: number }[];
+  added_at: string | null;
+  in_watchlist?: boolean;
+  watched?: boolean;
+  in_library?: boolean;
+  collection_pct?: number;
+  watch_pct?: number;
+  watch_started?: boolean;
+  user_rating?: number | null;
+}
+
 export interface CollectionDetail {
   id: number;
   name: string;
@@ -892,6 +940,7 @@ export interface TvdbEpisode {
   image_url: string | null;
   id: number | null;
   in_library: boolean;
+  in_watchlist?: boolean;
   watched: boolean;
   user_rating: number | null;
   in_lists: number[];
@@ -1044,6 +1093,7 @@ export interface Show {
   tmdb_rating: number;
   genres: string[];
   in_library: boolean;
+  in_watchlist?: boolean;
   watched: boolean;
   watch_pct?: number;
   watch_started?: boolean;
@@ -1186,6 +1236,19 @@ export interface UserStats {
   shows_watched_collected: number;
   shows_unwatched_collected: number;
   weekday_activity: { day: string; avg: number }[];
+}
+
+export interface FriendRating {
+  id: number;
+  user_id: number;
+  username: string;
+  display_name: string;
+  avatar_url?: string | null;
+  rating: number;
+  review?: string | null;
+  season_number?: number | null;
+  episode_order?: string | null;
+  rated_at: string;
 }
 
 export interface Comment {
@@ -1585,6 +1648,18 @@ export const api = {
       ),
   },
 
+  watchlist: {
+    list: (token: string) =>
+        get<{ movies: WatchlistMovie[]; shows: WatchlistShow[] }>("/watchlist", undefined, token),
+    toggle: (
+        body: { media_type: "movie" | "series"; tmdb_id: number; title?: string; poster_path?: string | null; release_date?: string | null },
+        token: string,
+    ) =>
+        post<{ status: string; in_watchlist: boolean }>("/watchlist/toggle", body, token),
+    remove: (mediaType: "movie" | "series", tmdbId: number, token: string) =>
+        del<{ status: string; in_watchlist: boolean }>(`/watchlist?media_type=${mediaType}&tmdb_id=${tmdbId}`, token),
+  },
+
   lists: {
     getAll: (token: string) =>
       get<{ lists: UserList[] }>("/lists", undefined, token),
@@ -1656,6 +1731,11 @@ export const api = {
       get<{ results: ProfileWatchedItem[]; page: number; total_pages: number; total_results: number }>(`/profile/${userId}/recently-watched-movies`, { page }, token),
     recentlyWatchedShows: (userId: number, page: number = 1, token?: string) =>
       get<{ results: ProfileWatchedItem[]; page: number; total_pages: number; total_results: number }>(`/profile/${userId}/recently-watched-shows`, { page }, token),
+  },
+
+  ratings: {
+    friends: (params: { media_type: string; tmdb_id?: number; tvdb_id?: number; media_id?: number; season_number?: number; episode_number?: number; episode_order?: string }, token: string) =>
+      get<{ ratings: FriendRating[] }>("/ratings/friends", params, token),
   },
 
   comments: {

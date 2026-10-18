@@ -2,6 +2,7 @@
 import Base from "../../../layouts/Base.astro";
 import ActionBar from "../../../components/ActionBar.astro";
 import TrailerButton from "../../../components/TrailerButton.astro";
+import FriendsRatingsSection from "../../../components/FriendsRatingsSection.astro";
 import CommentsSection from "../../../components/CommentsSection.astro";
 import TraktCommentsSection from "../../../components/TraktCommentsSection.astro";
 import CastCrewSection from "../../../components/CastCrewSection.astro";
@@ -118,7 +119,17 @@ const posterPath = show
 
           <!-- Info -->
           <div class="flex-1 min-w-0 pt-4">
-            <h1 class="text-4xl md:text-6xl font-black text-zinc-100 mb-3 tracking-tight leading-none">{show.title}</h1>
+            <div class="flex flex-col xl:flex-row xl:items-start justify-between gap-6 mb-4">
+              <div class="flex-1 min-w-0">
+                <h1 class="text-4xl md:text-6xl font-black text-zinc-100 mb-3 tracking-tight leading-none">{show.title}</h1>
+              </div>
+
+              <FriendsRatingsSection
+                mediaType="series"
+                tmdbId={show.tmdb_id_cross}
+                tvdbId={show.tvdb_id}
+              />
+            </div>
 
             <div class="flex flex-wrap items-center gap-3 mb-10">
               <div class="flex flex-wrap items-center gap-4 text-zinc-300 text-sm bg-zinc-900/40 p-3 rounded-xl border border-zinc-800/50 backdrop-blur-sm">
@@ -195,6 +206,10 @@ const posterPath = show
                   showDrop={true}
                   showId={show.id ?? null}
                   dropped={show.dropped ?? false}
+                  showWatchlist={!!show.tmdb_id_cross}
+                  inWatchlist={show.in_watchlist ?? false}
+                  posterPath={show.poster_path}
+                  releaseDate={show.first_air_date}
                 />
               </div>
             )}

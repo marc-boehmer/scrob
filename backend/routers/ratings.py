@@ -4,17 +4,20 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, delete
+from sqlalchemy import select, desc, delete, or_
+from sqlalchemy.orm import aliased
 
 from db import get_db
 from models.media import Media
 from models.ratings import Rating
 from models.base import MediaType
 from models.users import UserSettings
+from models.follows import Follow
+from models.profile import UserProfileData, PrivacyLevel
 from dependencies import get_current_user, get_current_user_or_api_key
 from models.users import User
 from core.enrichment import enrich_media, create_media_safely
-from core.identity import find_media
+from core.identity import find_media, coerce_id
 from core.episode_order import validate_episode_order, normalize_order_key, is_aired_order
 
 router = APIRouter()
@@ -185,6 +188,92 @@ async def get_ratings(
         .order_by(desc(Rating.rated_at))
     )
     return {"results": [format_rating(r, m) for r, m in result.all()]}
+
+
+@router.get("/friends")
+async def get_friends_ratings(
+    media_type: str,
+    tmdb_id: Optional[int] = Query(None),
+    tvdb_id: Optional[int] = Query(None),
+    media_id: Optional[int] = Query(None),
+    season_number: Optional[int] = Query(None),
+    episode_number: Optional[int] = Query(None),
+    episode_order: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_or_api_key),
+):
+    try:
+        mt = MediaType(media_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid media_type: {media_type}")
+
+    tmdb = coerce_id(tmdb_id)
+    tvdb = coerce_id(tvdb_id)
+    med_id = coerce_id(media_id)
+    if not (tmdb or tvdb or med_id):
+        raise HTTPException(status_code=400, detail="One of tmdb_id, tvdb_id or media_id is required")
+
+    media = await find_media(db, mt, media_id=med_id, tmdb_id=tmdb, tvdb_id=tvdb)
+    if not media:
+        return {"ratings": []}
+
+    f1 = aliased(Follow)
+    f2 = aliased(Follow)
+    friends_subq = (
+        select(f1.following_id)
+        .join(f2, (f1.follower_id == f2.following_id) & (f1.following_id == f2.follower_id))
+        .where(f1.follower_id == current_user.id)
+    )
+
+    effective_season = None if mt == MediaType.episode else season_number
+    effective_episode_order = None
+    if mt == MediaType.series and effective_season is not None and episode_order:
+        key = normalize_order_key(episode_order)
+        effective_episode_order = None if is_aired_order(key) else key
+
+    stmt = (
+        select(Rating, User, UserProfileData)
+        .join(User, Rating.user_id == User.id)
+        .outerjoin(UserProfileData, User.id == UserProfileData.user_id)
+        .where(
+            Rating.media_id == media.id,
+            Rating.user_id.in_(friends_subq),
+            Rating.season_number == effective_season if effective_season is not None else Rating.season_number.is_(None),
+        )
+    )
+
+    if effective_episode_order is not None:
+        stmt = stmt.where(Rating.episode_order == effective_episode_order)
+    elif mt == MediaType.series and effective_season is not None:
+        stmt = stmt.where(Rating.episode_order.is_(None))
+
+    if current_user.role != "admin":
+        stmt = stmt.where(
+            UserProfileData.privacy_level.in_([PrivacyLevel.public, PrivacyLevel.friends_only])
+        )
+
+    stmt = stmt.order_by(desc(Rating.rated_at))
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    ratings_list = []
+    for r, u, p in rows:
+        display_name = p.display_name if p and p.display_name else u.username
+        avatar_url = f"/profile/avatar/{u.id}" if p and p.avatar_path else None
+        ratings_list.append({
+            "id": r.id,
+            "user_id": u.id,
+            "username": u.username,
+            "display_name": display_name,
+            "avatar_url": avatar_url,
+            "rating": r.rating,
+            "review": r.review,
+            "season_number": r.season_number,
+            "episode_order": r.episode_order,
+            "rated_at": r.rated_at.isoformat(),
+        })
+
+    return {"ratings": ratings_list}
 
 
 @router.get("/{media_id}")

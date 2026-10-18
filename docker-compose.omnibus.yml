@@ -12,8 +12,8 @@ services:
 
       # ── Registrations ────────────────────────────────────────────────────────
       # Registrations are disabled by default. Set to true to allow additional users.
-      # ENABLE_REGISTRATIONS: "true"
-      # REGISTRATION_MAX_ALLOWED_USERS: "0"  # 0 = unlimited
+      ENABLE_REGISTRATIONS: "true"
+      REGISTRATION_MAX_ALLOWED_USERS: "0"  # 0 = unlimited
 
       # Days a login lasts when "Stay logged in" is ticked (7 days otherwise)
       # SESSION_REMEMBER_DAYS: "30"
@@ -56,8 +56,7 @@ services:
       # ── Advanced ─────────────────────────────────────────────────────────────
       # To use an external PostgreSQL instance instead of the embedded one,
       # set DATABASE_URL and the embedded database will be skipped entirely.
-      # DATABASE_URL: postgresql+asyncpg://user:password@host:5432/scrob
-
+      DATABASE_URL: postgresql+asyncpg://scrob:changeme@localhost:5432/scrob
       # Override the internal backend port (only needed if 7331 conflicts on bare metal)
       # BACKEND_PORT: "7331"
     volumes:

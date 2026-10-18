@@ -6,15 +6,22 @@ interface Props {
   collectionPct: number;
   watchPct: number;
   isSeries: boolean;
+  // Watchlist ("want to watch") button - movie/whole-show cards only.
+  // Episodes and season items keep the 3-button bar (backend toggle is
+  // movie/series-only), hence the conditional grid + border.
+  showWatchlist?: boolean;
+  inWatchlist?: boolean;
 }
 
-const { watched, inLists, inLibrary, collectionPct, watchPct, isSeries } = Astro.props;
+const { watched, inLists, inLibrary, collectionPct, watchPct, isSeries, showWatchlist = false, inWatchlist = false } = Astro.props;
 
 const watchActive = isSeries ? watchPct > 0 : watched;
 const collectActive = isSeries ? collectionPct > 0 : inLibrary;
+const wantActive = inWatchlist;
+
 ---
 
-<div class="grid grid-cols-3 flex-shrink-0">
+<div class:list={["grid", showWatchlist ? "grid-cols-4" : "grid-cols-3", "flex-shrink-0"]}>
   <!-- Watched (green) -->
   <button
     data-action="watched"
@@ -52,12 +59,12 @@ const collectActive = isSeries ? collectionPct > 0 : inLibrary;
 
   <!-- Collected (purple) -->
   <button
-    data-action="collected"
-    data-in-library={String(inLibrary)}
-    data-collection-pct={String(collectionPct)}
-    data-state={collectActive ? 'active' : 'inactive'}
-    title={isSeries ? `${collectionPct}% in library` : (inLibrary ? 'Remove from collection' : 'Add to collection')}
-    class={`flex flex-col items-center justify-center gap-1 py-2.5 transition-all cursor-pointer hover:brightness-125 ${collectActive ? 'bg-purple-500/20 text-purple-400' : 'bg-zinc-900 text-zinc-400 hover:bg-purple-500/10 hover:text-purple-400'}`}
+      data-action="collected"
+      data-in-library={String(inLibrary)}
+      data-collection-pct={String(collectionPct)}
+      data-state={collectActive ? 'active' : 'inactive'}
+      title={isSeries ? `${collectionPct}% in library` : (inLibrary ? 'Remove from collection' : 'Add to collection')}
+      class={`flex flex-col items-center justify-center gap-1 py-2.5 transition-all cursor-pointer ${showWatchlist ? 'border-r border-zinc-800/60 ' : ''}hover:brightness-125 ${collectActive ? 'bg-purple-500/20 text-purple-400' : 'bg-zinc-900 text-zinc-400 hover:bg-purple-500/10 hover:text-purple-400'}`}
   >
     <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="m2 7 4.41-4.41A2 2 0 0 1 7.83 2h8.34a2 2 0 0 1 1.42.59L22 7"/>
@@ -67,4 +74,21 @@ const collectActive = isSeries ? collectionPct > 0 : inLibrary;
     </svg>
     <span class="text-[8px] font-bold uppercase tracking-wider leading-none">{isSeries ? `${collectionPct}%` : 'Collected'}</span>
   </button>
+
+  {showWatchlist && (
+      <!-- Watchlist (amber) -->
+      <button
+          data-action="watchlist"
+          data-watchlist-style="compact"
+          data-in-watchlist={String(inWatchlist)}
+          data-state={wantActive ? 'active' : 'inactive'}
+          title={inWatchlist ? 'Remove from watchlist' : 'Add to watchlist'}
+          class={`flex flex-col items-center justify-center gap-1 py-2.5 transition-all cursor-pointer hover:brightness-125 ${wantActive ? 'bg-amber-500/20 text-amber-400' : 'bg-zinc-900 text-zinc-400 hover:bg-amber-500/10 hover:text-amber-400'}`}
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill={wantActive ? "currentColor" : "none"} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>
+        </svg>
+        <span class="text-[8px] font-bold uppercase tracking-wider leading-none">Watchlist</span>
+      </button>
+  )}
 </div>

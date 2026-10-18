@@ -3,6 +3,8 @@ services:
     container_name: scrob-db
     image: postgres:16-alpine
     restart: unless-stopped
+    ports:
+      - "5432:5432"
     environment:
       POSTGRES_USER: scrob
       POSTGRES_PASSWORD: changeme
@@ -17,7 +19,7 @@ services:
 
   scrob:
     container_name: scrob
-    image: bellamy/scrob:latest
+    build: .
     restart: unless-stopped
     depends_on:
       scrob-db:

@@ -1,0 +1,62 @@
+---
+import Base from "../layouts/Base.astro";
+import MediaCard from "../components/MediaCard.astro";
+import { api, type MediaItem } from "../lib/api";
+export const prerender = false;
+
+const { token } = Astro.locals;
+Astro.response.headers.set("Cache-Control", "no-store");
+
+let movies: MediaItem[] = [];
+let shows: MediaItem[] = [];
+let failed = false;
+try {
+  const data = await api.watchlist.list(token);
+  movies = data.movies.map((item) => ({ ...item, library: null, in_lists: [] }));
+  shows = data.shows.map((item) => ({ ...item, library: null, in_lists: [] }));
+} catch {
+  failed = true;
+}
+
+const total = movies.length + shows.length;
+---
+
+<Base title="Watchlist">
+  <div class="mb-8">
+    <h1 class="page-title mb-2">Watchlist</h1>
+    <p class="text-zinc-500">
+      {total > 0 ? `${total} title${total === 1 ? "" : "s"} saved to watch later.` : "Movies and shows you want to watch will appear here."}
+    </p>
+  </div>
+
+  {failed && (
+    <div class="text-center py-20 text-zinc-500">
+      <p class="text-lg">Couldn't load your watchlist.</p>
+    </div>
+  )}
+
+  {!failed && total === 0 && (
+    <div class="text-center py-20 text-zinc-500">
+      <p class="text-lg">Your watchlist is empty.</p>
+      <p class="text-sm mt-2">Save a movie or show with the bookmark button to find it here.</p>
+    </div>
+  )}
+
+  {shows.length > 0 && (
+    <section class="mb-12">
+      <h2 class="section-headline mb-4">Shows</h2>
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6">
+        {shows.map((item) => <MediaCard item={item} showWatchlistAction={false} isWatchlistItem />)}
+      </div>
+    </section>
+  )}
+
+  {movies.length > 0 && (
+    <section class="mb-12">
+      <h2 class="section-headline mb-4">Movies</h2>
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6">
+        {movies.map((item) => <MediaCard item={item} showWatchlistAction={false} isWatchlistItem />)}
+      </div>
+    </section>
+  )}
+</Base>

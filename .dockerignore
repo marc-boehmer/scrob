@@ -15,6 +15,17 @@ CLAUDE.md
 .env.*
 backend/.env.test.local
 
+# Local envs & caches — docker build only honors the root .dockerignore
+# (backend/.dockerignore is silently ignored), so without these the host's
+# .venv / node_modules overwrite the ones built inside the image (uv sync / npm ci)
+**/.venv/
+**/venv/
+**/node_modules/
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+
+
 # Test files
 test.http
 docker-compose-test-db.yaml

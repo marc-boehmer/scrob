@@ -44,7 +44,8 @@ const activeMovies = pathname.startsWith('/movies') || pathname.startsWith('/col
 const activeShows  = pathname.startsWith('/shows') || pathname.startsWith('/collection/shows') || pathname.startsWith('/show') || pathname.startsWith('/trending/shows');
 const activeHistory = pathname.startsWith('/history') || pathname === '/next-up';
 const activeLists  = pathname.startsWith('/lists') || pathname.startsWith('/list/');
-const activeHome   = !activeMovies && !activeShows && !activeHistory && !activeLists;
+const activeWatchlist = pathname.startsWith('/watchlist');
+const activeHome   = !activeMovies && !activeShows && !activeHistory && !activeLists && !activeWatchlist;
 
 const navLink = (active: boolean) =>
   active
@@ -262,6 +263,10 @@ const bottomNavItem = (active: boolean) =>
                   <a href="/dropped" class="flex items-center gap-2.5 px-3 py-2 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 active:opacity-70 rounded-lg transition">
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 opacity-70"><circle cx="12" cy="12" r="10"/><line x1="8" x2="16" y1="12" y2="12"/></svg>
                     Dropped
+                  </a>
+                  <a href="/watchlist" class:list={["flex items-center gap-2.5 px-3 py-2 hover:bg-zinc-800 active:opacity-70 rounded-lg transition", activeWatchlist ? "text-zinc-100" : "text-zinc-400 hover:text-zinc-100"]}>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 opacity-70"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+                    Watchlist
                   </a>
                   <div class="h-px bg-zinc-800 my-1 mx-1"></div>
                   <a href="/user-settings" class="flex items-center gap-2.5 px-3 py-2 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 active:opacity-70 rounded-lg transition">
@@ -1879,6 +1884,7 @@ const bottomNavItem = (active: boolean) =>
     // Local media id - the only handle a TVDB-only episode has (no tmdb_id).
     let _watchHistoryMediaId = '';
     let _watchHistoryMediaType = '';
+    let _watchHistorySourceBtn: HTMLElement | null = null;
     let _watchHistoryDateMode: 'now' | 'airdate' | 'custom' | 'unknown' = 'now';
     let _watchHistoryShowTmdbId = '';
     let _watchHistoryShowTvdbId = '';
@@ -1929,6 +1935,7 @@ const bottomNavItem = (active: boolean) =>
 
     async function openWatchHistoryModal(_btn: HTMLElement, tmdbId: string, mediaType: string, showTmdbId = '', seasonNumber = '', episodeNumber = '', showTvdbId = '', mediaId = '', airDate = '') {
       _watchHistoryBulkMode = null;
+      _watchHistorySourceBtn = _btn;
       _watchHistoryTmdbId = tmdbId;
       _watchHistoryMediaId = mediaId;
       _watchHistoryMediaType = mediaType;
@@ -1946,6 +1953,20 @@ const bottomNavItem = (active: boolean) =>
       document.getElementById('watch-history-log-btn')!.textContent = 'Mark as watched';
       document.getElementById('watch-history-modal')!.classList.remove('hidden');
       await loadWatchHistoryEvents();
+    }
+
+    async function removeFromWatchlistAfterWatching(sourceBtn: HTMLElement, mediaType: string, tmdbId: string): Promise<void> {
+      if ((mediaType !== 'movie' && mediaType !== 'series') || !tmdbId) return;
+      const card = sourceBtn.closest<HTMLElement>('[data-card]');
+      const watchlistBtn = card?.querySelector<HTMLElement>('[data-action="watchlist"]');
+      if (watchlistBtn?.dataset.inWatchlist !== 'true' && card?.dataset.inWatchlist !== 'true') return;
+
+      try {
+        await apiFetch(`/watchlist?media_type=${mediaType}&tmdb_id=${encodeURIComponent(tmdbId)}`, 'DELETE');
+        window.location.reload();
+      } catch (err) {
+        alertFromError(err, "Couldn't remove the watched title from your watchlist");
+      }
     }
 
     // Marking a whole show watched can outlast a proxy timeout, so the server
@@ -2234,6 +2255,7 @@ const bottomNavItem = (active: boolean) =>
               const body: Record<string, unknown> = { ...idBody, watched_at: watchedAt };
               await runShowWatchJob(body);
               cascadeWatchedUI(sourceBtn, 'series', seriesId, seriesId, '', '', true);
+              await removeFromWatchlistAfterWatching(sourceBtn, 'series', seriesId);
             }
             closeWatchHistoryModal();
           } catch (err) {
@@ -2262,6 +2284,9 @@ const bottomNavItem = (active: boolean) =>
           await apiFetch('/history', 'POST', watchBody);
           await loadWatchHistoryEvents();
           syncSeasonWatchPctFromDOM(_watchHistoryShowTmdbId, _watchHistorySeasonNumber);
+          if (_watchHistoryMediaType === 'movie' && _watchHistorySourceBtn) {
+            await removeFromWatchlistAfterWatching(_watchHistorySourceBtn, 'movie', _watchHistoryTmdbId);
+          }
           // Reset to "Just now" after logging
           _watchHistoryDateMode = 'now';
           setDateModeButtons('now');
@@ -2317,7 +2342,7 @@ const bottomNavItem = (active: boolean) =>
       if (!card) return;
 
       const action = btn.dataset.action;
-      const mediaActions = ['watched', 'list', 'collected', 'request', 'rate', 'rewatch', 'drop'];
+      const mediaActions = ['watched', 'list', 'collected', 'watchlist', 'request', 'rate', 'rewatch', 'drop'];
       if (!action || !mediaActions.includes(action)) return;
 
       e.preventDefault();
@@ -2330,6 +2355,53 @@ const bottomNavItem = (active: boolean) =>
       const mediaId = card.dataset.mediaId || card.dataset.id || '';
       const mediaType = card.dataset.mediaType!;
       const episodeOrder = card.dataset.episodeOrder || 'tmdb';
+
+      if (action === "watchlist") {
+        if (mediaType !== "movie" && mediaType !== "series") return;
+        const parsedTmdbId = Number(tmdbId);
+        if (!parsedTmdbId) return;
+        const next = btn.dataset.inWatchlist !== "true";
+        const detailStyle = btn.dataset.watchlistStyle === "detail";
+        const setWatchlistState = (inWatchlist: boolean) => {
+          btn.dataset.inWatchlist = String(inWatchlist);
+          btn.dataset.state = inWatchlist ? "active" : "inactive";
+          btn.title = inWatchlist ? "Remove from watchlist" : "Add to watchlist";
+          btn.classList.toggle("bg-amber-500/20", inWatchlist && !detailStyle);
+          btn.classList.toggle("bg-amber-500/50", inWatchlist && detailStyle);
+          btn.classList.toggle("text-amber-400", inWatchlist && !detailStyle);
+          btn.classList.toggle("text-amber-300", inWatchlist && detailStyle);
+          btn.classList.toggle("bg-zinc-900", !inWatchlist && !detailStyle);
+          btn.classList.toggle("bg-zinc-800", !inWatchlist && detailStyle);
+          btn.classList.toggle("text-zinc-400", !inWatchlist && !detailStyle);
+          btn.classList.toggle("text-zinc-500", !inWatchlist && detailStyle);
+          btn.classList.toggle("hover:bg-amber-500/10", !detailStyle && !inWatchlist);
+          btn.classList.toggle("hover:bg-amber-400/50", detailStyle && !inWatchlist);
+          btn.classList.toggle("hover:text-amber-400", !inWatchlist);
+          btn.querySelector("svg")?.setAttribute("fill", inWatchlist ? "currentColor" : "none");
+        };
+        setWatchlistState(next);
+        try {
+          const token = TOKEN();
+          const response = await fetch("/api/proxy/watchlist/toggle", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+            body: JSON.stringify({
+              media_type: mediaType,
+              tmdb_id: parsedTmdbId,
+              title: card.dataset.title || undefined,
+              poster_path: card.dataset.posterPath || null,
+              release_date: card.dataset.airDate || null,
+            }),
+          });
+          if (!response.ok) throw new Error(await response.text());
+          const result = await response.json();
+          if (result.in_watchlist !== next) throw new Error("Watchlist state did not update.");
+          if (!next && window.location.pathname === "/watchlist") window.location.reload();
+        } catch (err) {
+          setWatchlistState(!next);
+          alertFromError(err, "Failed to update watchlist");
+        }
+      }
 
       if (action === 'watched') {
         const isWatched = btn.dataset.watched === 'true';

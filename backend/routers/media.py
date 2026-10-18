@@ -16,6 +16,11 @@ from sqlalchemy import select, or_, and_, delete, func, cast as sa_cast, Text, t
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
+from models.events import WatchEvent
+from models.ratings import Rating
+from models.watchlist import WatchlistItem
+from models.base import MediaType, CollectionSource
+
 from db import get_db, AsyncSessionLocal
 from models.media import Media
 from models.collection import Collection, CollectionFile
@@ -458,6 +463,25 @@ async def enrich_with_state(
             else:
                 season_list_membership.setdefault((row_tmdb_id, row_season_number), []).append(list_id)
 
+    # --- Watchlist membership ---
+    # Movie/series only - keyed (media_type, tmdb_id), the same shape
+    # list_membership uses above (the type in the key is what stops a TMDB
+    # person id colliding with a movie id from cross-contaminating).
+    # Named in_watchlist to match in_library / in_lists.
+    watchlist_membership: dict[tuple[str, int], bool] = {}
+    if all_tmdb_ids:
+        want_q = await db.execute(
+            select(Media.tmdb_id, Media.media_type)
+            .join(WatchlistItem, WatchlistItem.media_id == Media.id)
+            .where(
+                WatchlistItem.user_id == user_id,
+                Media.tmdb_id.in_(all_tmdb_ids),
+                Media.media_type.in_([MediaType.movie, MediaType.series]),
+            )
+            .distinct()
+        )
+        watchlist_membership = {(mt.value, tid): True for tid, mt in want_q.all()}
+
     # --- Collection pct and watched status for shows ---
     show_pct: dict[int, int] = {}
     show_aired_count: dict[int, int] = {}
@@ -766,6 +790,7 @@ async def enrich_with_state(
             item["in_lists"] = season_list_membership.get((tid, item["season_number"]), [])
         else:
             item["in_lists"] = list_membership.get((t, tid), [])
+        item["in_watchlist"] = watchlist_membership.get((t, tid), False)
         item["is_monitored"] = monitored_status.get(tid, False)
         item["request_enabled"] = request_enabled_map.get(tid, False)
         item["request_status"] = request_status_map.get(tid)
@@ -5576,6 +5601,7 @@ async def get_media_details(
             "dropped": local_info["id"] in dropped_movie_ids if local_info["id"] else False,
             "watched": state_item.get("watched", False),
             "in_lists": state_item.get("in_lists", []),
+            "in_watchlist": state_item.get("in_watchlist", False),
             "user_rating": state_item.get("user_rating"),
             "play_count": state_item.get("play_count", 0),
             "in_library": state_item.get("in_library", local_info["in_library"]),
@@ -6140,4 +6166,3 @@ async def serve_rating_poster(
         media_type=content_type or "image/jpeg",
         headers={"Cache-Control": "public, max-age=86400"},
     )
-
