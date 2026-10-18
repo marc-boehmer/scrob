@@ -423,6 +423,7 @@ const discoverBackdropUrl = discoverPick?.backdrop_path
           const watched = item.watched ?? false;
           const inLists = item.in_lists ?? [];
           const inLibrary = item.in_library ?? false;
+          const inWatchlist = item.in_watchlist ?? false;
           const collectionPct = item.collection_pct ?? (inLibrary ? 100 : 0);
           const watchPct = item.watch_pct ?? (watched ? 100 : 0);
           const watchActive = isSeries ? watchPct > 0 : watched;
@@ -437,6 +438,10 @@ const discoverBackdropUrl = discoverPick?.backdrop_path
             data-card
             data-tmdb-id="${esc(String(item.tmdb_id))}"
             data-media-type="${esc(item.type)}"
+            data-title="${esc(item.title)}"
+            data-poster-path="${esc(item.poster_path ?? '')}"
+            data-air-date="${esc(item.release_date ?? '')}"
+            data-in-watchlist="${inWatchlist}"
             data-show-tmdb-id=""
             data-season=""
           >

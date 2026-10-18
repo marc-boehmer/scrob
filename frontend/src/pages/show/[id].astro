@@ -233,6 +233,10 @@ const posterPath = show
                   showDrop={true}
                   showId={show.id ?? null}
                   dropped={show.dropped ?? false}
+                  showWatchlist={true}
+                  inWatchlist={show.in_watchlist ?? false}
+                  posterPath={show.poster_path}
+                  releaseDate={show.first_air_date}
                 />
               </div>
             )}

@@ -7,9 +7,9 @@ from dependencies import require_admin
 from models.users import User
 from contextlib import asynccontextmanager
 from sqlalchemy.ext.asyncio import AsyncSession
-from db import engine, Base
-import models # noqa: F401
-from routers import webhooks, media, history, ratings, sync, shows, auth, lists, oidc, profile, trakt, simkl, wetrakr, mdblist, bingebase, comments, admin, compat, export, yamtrack, calendar
+from db import engine
+from models import Base
+from routers import webhooks, media, history, ratings, sync, shows, auth, lists, oidc, profile, trakt, simkl, wetrakr, mdblist, bingebase, comments, admin, compat, export, yamtrack, calendar, watchlist
 
 from core.access_log import install as install_access_log_redaction
 install_access_log_redaction()
@@ -872,6 +872,7 @@ app.include_router(export.router, prefix="/export", tags=["export"])
 app.include_router(yamtrack.router, prefix="/yamtrack", tags=["yamtrack"])
 app.include_router(calendar.router, prefix="/calendar", tags=["calendar"])
 app.include_router(compat.router, tags=["compat"])
+app.include_router(watchlist.router, prefix="/watchlist", tags=["watchlist"])
 
 @app.get("/health")
 async def health():

@@ -276,6 +276,10 @@ const refreshUrl = isEpisode
                   showDrop={item.type === 'movie'}
                   dropped={item.dropped ?? false}
                   airDate={item.release_date}
+                  showWatchlist={item.type === 'movie' || item.type === 'series'}
+                  inWatchlist={item.in_watchlist ?? false}
+                  posterPath={item.poster_path}
+                  releaseDate={item.release_date}
                 />
               </div>
             )}
