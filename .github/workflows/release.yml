@@ -79,9 +79,9 @@ jobs:
             bellamy/scrob:latest
             bellamy/scrob:main
             bellamy/scrob:${{ needs.release.outputs.new_release_version }}
-            ghcr.io/ellite/scrob:latest
-            ghcr.io/ellite/scrob:main
-            ghcr.io/ellite/scrob:${{ needs.release.outputs.new_release_version }}
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:main
+            ghcr.io/${{ github.repository }}:${{ needs.release.outputs.new_release_version }}
           cache-from: type=gha,scope=scrob-release
           cache-to: type=gha,mode=max,scope=scrob-release
 
@@ -98,8 +98,8 @@ jobs:
             bellamy/scrob:latest-omnibus
             bellamy/scrob:main-omnibus
             bellamy/scrob:${{ needs.release.outputs.new_release_version }}-omnibus
-            ghcr.io/ellite/scrob:latest-omnibus
-            ghcr.io/ellite/scrob:main-omnibus
-            ghcr.io/ellite/scrob:${{ needs.release.outputs.new_release_version }}-omnibus
+            ghcr.io/${{ github.repository }}:latest-omnibus
+            ghcr.io/${{ github.repository }}:main-omnibus
+            ghcr.io/${{ github.repository }}:${{ needs.release.outputs.new_release_version }}-omnibus
           cache-from: type=gha,scope=scrob-omnibus-release
           cache-to: type=gha,mode=max,scope=scrob-omnibus-release
