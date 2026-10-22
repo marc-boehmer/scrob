@@ -16,7 +16,7 @@ from models.show import Show as ShowModel
 from models.users import UserSettings
 from dependencies import get_current_user, get_current_user_or_api_key, get_optional_user_or_api_key
 from models.users import User
-from models.follows import Follow
+from core.friends import are_friends, friend_ids
 from models.global_settings import GlobalSettings
 from routers.media import enrich_with_state, require_anon_nav_allowed
 from core.enrichment import is_unmapped_tvdb_episode, create_media_safely, get_or_create_tvdb_series_media
@@ -38,21 +38,11 @@ async def _check_list_access(lst: ListModel, current_user: Optional[User], db: A
     is_owner = bool(current_user and current_user.id == lst.user_id)
     is_admin = bool(current_user and current_user.role == "admin")
 
-    is_mutual_follow = False
+    is_friend = False
     if current_user and not is_owner and lst.privacy_level == PrivacyLevel.friends_only:
-        mutual_q = await db.execute(
-            select(func.count())
-            .select_from(Follow)
-            .where(Follow.follower_id == current_user.id, Follow.following_id == lst.user_id)
-            .where(
-                select(Follow.id)
-                .where(Follow.follower_id == lst.user_id, Follow.following_id == current_user.id)
-                .exists()
-            )
-        )
-        is_mutual_follow = mutual_q.scalar_one() > 0
+        is_friend = await are_friends(db, current_user.id, lst.user_id)
 
-    if not (is_owner or is_admin or lst.privacy_level == PrivacyLevel.public or is_mutual_follow):
+    if not (is_owner or is_admin or lst.privacy_level == PrivacyLevel.public or is_friend):
         raise HTTPException(status_code=403, detail="This list is private")
 
     # Same reasoning as _check_profile_access in routers/profile.py: a request
@@ -189,18 +179,8 @@ async def get_public_lists(
         rows = result.all()
         return {"lists": [{**_format_list(lst), "username": username} for lst, username in rows]}
 
-    # Friends-only lists of mutual follows belong in discovery too — they were
-    # invisible to the very friends they're shared with (#210).
-    FollowBack = aliased(Follow)
-    mutual_rows = await db.execute(
-        select(Follow.following_id)
-        .join(FollowBack, and_(
-            FollowBack.follower_id == Follow.following_id,
-            FollowBack.following_id == Follow.follower_id,
-        ))
-        .where(Follow.follower_id == current_user.id)
-    )
-    mutual_ids = [r[0] for r in mutual_rows.all()]
+    # Friends-only lists belong in discovery too (#210).
+    mutual_ids = await friend_ids(db, current_user.id)
     visibility = ListModel.privacy_level == PrivacyLevel.public
     if mutual_ids:
         visibility = or_(visibility, and_(

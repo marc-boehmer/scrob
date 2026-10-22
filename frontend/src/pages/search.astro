@@ -3,6 +3,7 @@ import Base from "../layouts/Base.astro";
 import MediaCard from "../components/MediaCard.astro";
 import Pagination from "../components/Pagination.astro";
 import { api, type MediaItem, type UserSearchResult } from "../lib/api";
+import { FRIEND_LABELS, friendButtonClass, type FriendshipStatus } from "../lib/friends";
 
 const { token, user: currentUser } = Astro.locals;
 Astro.response.headers.set("Cache-Control", "no-store");
@@ -181,24 +182,32 @@ const searchPrompt = `Type something in the search bar to find ${
         <div class="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-5 flex flex-col gap-4 hover:border-zinc-600 transition-all">
           <!-- Top row: avatar + name + follow -->
           <div class="flex items-center gap-4">
-            <a href={`/profile/${user.id}`} class="shrink-0">
-              <div class="w-14 h-14 rounded-xl overflow-hidden bg-zinc-800 border border-zinc-700 flex items-center justify-center">
-                {user.avatar_url ? (
-                  <img src={`/api/proxy${user.avatar_url}`} alt={user.display_name} class="w-full h-full object-cover" loading="lazy" />
-                ) : (
-                  <span class="text-xl font-black text-zinc-400">{user.display_name[0].toUpperCase()}</span>
-                )}
-              </div>
-            </a>
+            {!(user.privacy_level === "private" && !user.is_self) && (
+              <a href={`/profile/${user.id}`} class="shrink-0">
+                <div class="w-14 h-14 rounded-xl overflow-hidden bg-zinc-800 border border-zinc-700 flex items-center justify-center">
+                  {user.avatar_url ? (
+                    <img src={`/api/proxy${user.avatar_url}`} alt={user.display_name} class="w-full h-full object-cover" loading="lazy" />
+                  ) : (
+                    <span class="text-xl font-black text-zinc-400">{user.display_name[0].toUpperCase()}</span>
+                  )}
+                </div>
+              </a>
+            )}
 
             <div class="flex-1 min-w-0">
               <a href={`/profile/${user.id}`} class="block">
                 <p class="font-bold text-zinc-100 truncate leading-tight">{user.display_name}</p>
-                <p class="text-xs text-zinc-500 truncate">@{user.username}{user.country ? ` · ${user.country.toUpperCase()}` : ""}</p>
+                {user.username && (
+                  <p class="text-xs text-zinc-500 truncate">@{user.username}{user.country ? ` · ${user.country.toUpperCase()}` : ""}</p>
+                )}
               </a>
             </div>
 
-            {!user.is_self && currentUser && (
+          </div>
+
+          {!user.is_self && (currentUser || user.privacy_level !== "public") && (
+            <div class="flex flex-wrap items-center gap-2">
+            {!user.is_self && currentUser && (user.privacy_level === "public" || user.is_following) && (
               <button
                 class={`follow-btn cursor-pointer shrink-0 px-3 py-1.5 rounded-full text-xs font-bold border transition-all ${user.is_following ? "bg-zinc-800 hover:bg-red-900/40 text-zinc-300 hover:text-red-300 border-zinc-700 hover:border-red-500/40" : "bg-blue-600/80 hover:bg-blue-500 text-white border-blue-500/40"}`}
                 data-user-id={user.id}
@@ -207,27 +216,49 @@ const searchPrompt = `Type something in the search bar to find ${
                 {user.is_following ? "Following" : "Follow"}
               </button>
             )}
-          </div>
+            {!user.is_self && currentUser && (
+              <button
+                class={friendButtonClass((user.friendship_status ?? "none") as FriendshipStatus)}
+                data-user-id={user.id}
+                data-status={user.friendship_status ?? "none"}
+              >
+                {FRIEND_LABELS[(user.friendship_status ?? "none") as FriendshipStatus]}
+              </button>
+            )}
+            {!user.is_self && user.privacy_level === "private" && (
+              <span class="shrink-0 ml-auto text-[10px] font-bold uppercase tracking-wide text-zinc-500">
+                Private
+              </span>
+            )}
+            {!user.is_self && user.privacy_level === "friends_only" && (
+              <span class="shrink-0 ml-auto text-[10px] font-bold uppercase tracking-wide text-zinc-500">
+                Friends only
+              </span>
+            )}
+            </div>
+          )}
 
           <!-- Stats row -->
-          <div class="grid grid-cols-4 gap-2 pt-1 border-t border-zinc-800">
-            <div class="text-center">
-              <p class="text-base font-black text-zinc-100 leading-none">{user.movies_watched}</p>
-              <p class="text-[10px] text-zinc-400 font-bold uppercase tracking-wide mt-1">Movies</p>
+          {user.movies_watched !== undefined && (
+            <div class="grid grid-cols-4 gap-2 pt-1 border-t border-zinc-800">
+              <div class="text-center">
+                <p class="text-base font-black text-zinc-100 leading-none">{user.movies_watched ?? 0}</p>
+                <p class="text-[10px] text-zinc-400 font-bold uppercase tracking-wide mt-1">Movies</p>
+              </div>
+              <div class="text-center">
+                <p class="text-base font-black text-zinc-100 leading-none">{user.shows_watched ?? 0}</p>
+                <p class="text-[10px] text-zinc-400 font-bold uppercase tracking-wide mt-1">Shows</p>
+              </div>
+              <div class="text-center">
+                <p class="text-base font-black text-zinc-100 leading-none">{user.total_rated ?? 0}</p>
+                <p class="text-[10px] text-zinc-400 font-bold uppercase tracking-wide mt-1">Rated</p>
+              </div>
+              <div class="text-center">
+                <p class="text-base font-black text-zinc-100 leading-none">{user.follower_count ?? 0}</p>
+                <p class="text-[10px] text-zinc-400 font-bold uppercase tracking-wide mt-1">Followers</p>
+              </div>
             </div>
-            <div class="text-center">
-              <p class="text-base font-black text-zinc-100 leading-none">{user.shows_watched}</p>
-              <p class="text-[10px] text-zinc-400 font-bold uppercase tracking-wide mt-1">Shows</p>
-            </div>
-            <div class="text-center">
-              <p class="text-base font-black text-zinc-100 leading-none">{user.total_rated}</p>
-              <p class="text-[10px] text-zinc-400 font-bold uppercase tracking-wide mt-1">Rated</p>
-            </div>
-            <div class="text-center">
-              <p class="text-base font-black text-zinc-100 leading-none">{user.follower_count}</p>
-              <p class="text-[10px] text-zinc-400 font-bold uppercase tracking-wide mt-1">Followers</p>
-            </div>
-          </div>
+          )}
         </div>
       ))}
     </div>
@@ -299,6 +330,8 @@ const searchPrompt = `Type something in the search bar to find ${
 </Base>
 
 <script>
+  import { initFriendButtons } from '../lib/friends';
+
   function esc(s: string): string {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
@@ -372,6 +405,8 @@ const searchPrompt = `Type something in the search bar to find ${
         window.location.href = `/search?${params.toString()}`;
       });
     }
+
+    initFriendButtons(token);
 
     document.querySelectorAll<HTMLButtonElement>('.follow-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
@@ -503,4 +538,3 @@ const searchPrompt = `Type something in the search bar to find ${
   setupLiveSearch();
   document.addEventListener('astro:after-swap', setup);
 </script>
-

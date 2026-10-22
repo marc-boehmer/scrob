@@ -1147,17 +1147,25 @@ export interface ProfileRatedItem {
 
 export interface UserSearchResult {
   id: number;
-  username: string;
+  username?: string;
+  display_name: string;
+  privacy_level: PrivacyLevel;
+  avatar_url?: string | null;
+  country?: string | null;
+  movies_watched?: number;
+  shows_watched?: number;
+  total_collected?: number;
+  total_rated?: number;
+  follower_count?: number;
+  is_following?: boolean;
+  friendship_status?: "none" | "friends" | "request_sent" | "request_received";
+  is_self: boolean;
+}
+
+export interface FriendEntry {
+  id: number;
   display_name: string;
   avatar_url: string | null;
-  country: string | null;
-  movies_watched: number;
-  shows_watched: number;
-  total_collected: number;
-  total_rated: number;
-  follower_count: number;
-  is_following: boolean;
-  is_self: boolean;
 }
 
 export interface ProfileFollowEntry {
@@ -1195,6 +1203,8 @@ export interface PublicProfile {
   id: number;
   username: string;
   display_name: string;
+  privacy_level: PrivacyLevel;
+  is_limited: boolean;
   bio: string | null;
   country: string | null;
   movie_genres: string[];
@@ -1217,6 +1227,7 @@ export interface PublicProfile {
   followers: ProfileFollowEntry[];
   following: ProfileFollowEntry[];
   is_following: boolean;
+  friendship_status?: "none" | "friends" | "request_sent" | "request_received";
 }
 
 export interface UserStats {
@@ -1700,6 +1711,13 @@ export const api = {
       post<{ status: string; message: string }>(`/sync/connection/${connectionId}/scan`, undefined, token),
     getSeasonOverrides: (token: string) =>
       get<ShowSeasonOverride[]>("/sync/season-overrides", undefined, token),
+  },
+
+  friends: {
+    list: (token: string) =>
+      get<{ friends: FriendEntry[] }>("/friends", undefined, token),
+    requests: (token: string) =>
+      get<{ incoming: FriendEntry[]; outgoing: FriendEntry[] }>("/friends/requests", undefined, token),
   },
 
   profile: {

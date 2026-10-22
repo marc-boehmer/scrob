@@ -2,6 +2,7 @@
 import Base from "../../layouts/Base.astro";
 import ListCard from "../../components/ListCard.astro";
 import { api, type PublicProfile, type ProfileListItem, type ProfileFollowEntry, tmdbImageUrl } from "../../lib/api";
+import { FRIEND_LABELS, friendButtonClass, type FriendshipStatus } from "../../lib/friends";
 import { ratingPosterUrl } from "../../lib/posters";
 import { wetrakrCredit } from "../../lib/wetrakrAttribution";
 
@@ -25,13 +26,14 @@ try {
   }
 }
 
+const friendStatus = (profile?.friendship_status ?? "none") as FriendshipStatus;
 const isOwner = currentUser && currentUser.id === Number(id);
-const joinedDate = profile
+const joinedDate = profile && !profile.is_limited
   ? new Date(profile.created_at).toLocaleDateString(undefined, { year: "numeric", month: "long" })
   : "";
 
 // Collect all available backdrops, prefer top-rated, fall back to recently-watched
-const backdropPool = profile
+const backdropPool = profile && !profile.is_limited
   ? [
       ...profile.top_rated_movies.map(i => i.backdrop_path).filter(Boolean),
       ...profile.top_rated_shows.map(i => i.backdrop_path).filter(Boolean),
@@ -125,6 +127,29 @@ function starFill(rating: number, star: number): "full" | "half" | "empty" {
         </div>
       </div>
 
+    ) : profile?.is_limited ? (
+      <div class="max-w-2xl mx-auto mt-12 text-center">
+        <div class="bg-zinc-900/60 border border-zinc-800 p-10 rounded-3xl">
+          <div class="w-20 h-20 bg-zinc-800 rounded-full flex items-center justify-center mx-auto mb-6">
+            <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="text-zinc-400"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          </div>
+          <h1 class="text-3xl font-black text-zinc-100 tracking-tight mb-2">{profile.display_name}</h1>
+          <p class="text-zinc-400 font-medium">
+            {profile.privacy_level === "private" ? "This profile is private." : "This profile is visible to friends only."}
+          </p>
+          {currentUser && currentUser.id !== profile.id && (
+            <div class="mt-6 flex items-center justify-center gap-2">
+            <button
+                  class={friendButtonClass(friendStatus)}
+                  data-user-id={profile.id}
+                  data-status={friendStatus}
+                >
+                  {FRIEND_LABELS[friendStatus]}
+                </button>
+            </div>
+          )}
+        </div>
+      </div>
     ) : profile && (
       <>
         <!-- ── Header ──────────────────────────────────────── -->
@@ -171,6 +196,8 @@ function starFill(rating: number, star: number): "full" | "half" | "empty" {
                     Edit Profile
                   </a>
                 ) : currentUser && (
+                  <>
+                  {(profile.privacy_level === "public" || profile.is_following) && (
                   <button
                     id="follow-btn"
                     data-user-id={profile.id}
@@ -189,6 +216,15 @@ function starFill(rating: number, star: number): "full" | "half" | "empty" {
                       </>
                     )}
                   </button>
+                  )}
+                  <button
+                    class={friendButtonClass(friendStatus)}
+                    data-user-id={profile.id}
+                    data-status={friendStatus}
+                  >
+                    {FRIEND_LABELS[friendStatus]}
+                  </button>
+                  </>
                 )}
               </div>
 
@@ -593,10 +629,13 @@ Lists
 </Base>
 
 <script>
+  import { initFriendButtons } from '../../lib/friends';
+
   function setup() {
     const token = (document.getElementById('app-data') as HTMLElement | null)?.dataset.token ?? '';
 
     setupFollowButton(token);
+    initFriendButtons(token);
     setupDeleteCommentButtons(token);
   }
 
@@ -671,4 +710,3 @@ Lists
   setup();
   document.addEventListener('astro:after-swap', setup);
 </script>
-

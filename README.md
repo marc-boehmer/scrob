@@ -68,7 +68,11 @@ Scrob syncs your libraries from **Jellyfin**, **Plex**, **Emby**, **Nuvio**, **A
 - **Rewatches**: Start a rewatch on any show and Scrob tracks progress for that cycle separately, without touching your original watch history.
 - **Personal lists**: Create and curate lists of movies and shows. Mark them public to share with other users on the same instance.
 - **Comments**: Leave comments on movies, shows, seasons, and episodes.
-- **Social**: Follow other users and see their activity.
+- **Social**: Follow other users and see their activity. Following is one-way and only available for public profiles.
+- **Friends**: Send friend requests from a profile or from user search; the other person accepts (or declines) on the **Friends** page in the user menu. Friends are mutual and can see each other's friends-only profile, lists and ratings.
+- **Profile privacy**: Each profile is **Public**, **Friends only** or **Private**. New accounts default to *Friends only*. Anyone who isn't allowed to see a profile (including friends of a *Private* profile) only sees the name and a notice that it is private or friends-only, but can still find the user in search and send a friend request.
+- **Friends' ratings**: Movie, show, season and episode pages include a section showing how your friends rated the title (visible according to each friend's privacy level).
+- **Watchlist (want to watch)**: Add movies and shows to a personal **Watchlist** from any card or detail page, and manage them on the **Watchlist** page in the user menu.
 - **Release schedule**: Movie pages show the full release schedule - theatrical, digital, and physical dates - sourced from TMDB.
 - **TMDB integration**: Rich metadata for every title - posters, backdrops, cast, crew, trailers, collections, and more.
 - **RPDB rating posters**: Optionally use RatingPosterDB movie and show posters with embedded ratings. Configure your own key and customize the artwork and rating sources through RPDB.

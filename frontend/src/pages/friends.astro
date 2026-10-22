@@ -1,0 +1,75 @@
+---
+import Base from "../layouts/Base.astro";
+import { api, type FriendEntry } from "../lib/api";
+
+const { token, user } = Astro.locals;
+if (!user) return Astro.redirect("/login?next=/friends");
+Astro.response.headers.set("Cache-Control", "no-store");
+
+const [{ friends }, { incoming, outgoing }] = await Promise.all([
+  api.friends.list(token!).catch(() => ({ friends: [] as FriendEntry[] })),
+  api.friends.requests(token!).catch(() => ({ incoming: [] as FriendEntry[], outgoing: [] as FriendEntry[] })),
+]);
+
+const btn = "friend-action cursor-pointer px-3 py-1.5 rounded-full text-xs font-bold border transition-all";
+const primary = `${btn} bg-blue-600/80 hover:bg-blue-500 text-white border-blue-500/40`;
+const neutral = `${btn} bg-zinc-800 hover:bg-red-900/40 text-zinc-300 hover:text-red-300 border-zinc-700 hover:border-red-500/40`;
+---
+
+<Base title="Friends">
+  <div id="app-data" data-token={token} class="hidden" aria-hidden="true"></div>
+
+  <div class="max-w-3xl mx-auto py-8">
+    <h1 class="page-title mb-8">Friends</h1>
+
+    {[
+      { title: "Friend requests", list: incoming, empty: "No pending requests.", actions: [["accept", "Accept", primary], ["remove", "Decline", neutral]] },
+      { title: "Sent requests", list: outgoing, empty: "No outgoing requests.", actions: [["remove", "Cancel", neutral]] },
+      { title: "Your friends", list: friends, empty: "You have no friends yet. Find people via search.", actions: [["remove", "Remove", neutral]] },
+    ].map((section) => (
+      <section class="mb-10">
+        <h2 class="text-lg font-black text-zinc-100 mb-3">{section.title} <span class="text-zinc-500 font-medium">({section.list.length})</span></h2>
+        {section.list.length === 0 ? (
+          <p class="text-sm text-zinc-500">{section.empty}</p>
+        ) : (
+          <ul class="space-y-2">
+            {section.list.map((p) => (
+              <li class="flex items-center justify-between gap-3 bg-zinc-900/60 border border-zinc-800 rounded-2xl px-4 py-3">
+                <a href={`/profile/${p.id}`} class="font-bold text-zinc-100 hover:text-white truncate">{p.display_name}</a>
+                <div class="flex gap-2 shrink-0">
+                  {section.actions.map(([action, label, cls]) => (
+                    <button class={cls} data-user-id={p.id} data-action={action}>{label}</button>
+                  ))}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    ))}
+  </div>
+</Base>
+
+<script>
+  function setup() {
+    const token = (document.getElementById('app-data') as HTMLElement | null)?.dataset.token ?? '';
+    document.querySelectorAll<HTMLButtonElement>('.friend-action').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.userId;
+        const action = btn.dataset.action;
+        btn.disabled = true;
+        try {
+          const res = await fetch(
+            action === 'accept' ? `/api/proxy/friends/${id}/accept` : `/api/proxy/friends/${id}`,
+            { method: action === 'accept' ? 'POST' : 'DELETE', headers: { 'Authorization': `Bearer ${token}` } },
+          );
+          if (!res.ok) throw new Error('Request failed');
+          window.location.reload();
+        } catch {
+          btn.disabled = false;
+        }
+      });
+    });
+  }
+  setup();
+</script>
