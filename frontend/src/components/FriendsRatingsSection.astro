@@ -35,13 +35,19 @@ if (user && token) {
   }
 }
 
-const avgRating = ratings.length > 0
-  ? (ratings.reduce((acc, r) => acc + r.rating, 0) / ratings.length).toFixed(1)
-  : null;
+const avg = (list: FriendRating[]) =>
+  list.length > 0 ? (list.reduce((acc, r) => acc + r.rating, 0) / list.length).toFixed(1) : null;
+
+const groups = [
+  { key: "friends", label: "Friends", ratings: ratings.filter((r) => r.is_friend !== false) },
+  { key: "follows", label: "Follows", ratings: ratings.filter((r) => r.is_friend === false) },
+].filter((g) => g.ratings.length > 0);
+const showTabs = groups.length > 1;
+const title = groups.length === 1 ? `${groups[0].label}' Ratings` : "Ratings";
 ---
 
-{user && ratings.length > 0 && (
-  <div class="w-full xl:w-80 shrink-0 bg-zinc-900/70 border border-zinc-800/80 backdrop-blur-md rounded-2xl p-4 shadow-xl flex flex-col gap-3 my-2 xl:my-0" id="friends-ratings-widget">
+{user && groups.length > 0 && (
+  <div class="w-full xl:w-80 shrink-0 bg-zinc-900/70 border border-zinc-800/80 backdrop-blur-md rounded-2xl p-4 shadow-xl flex flex-col gap-3 my-2 xl:my-0" id="friends-ratings-widget" data-ratings-widget>
     <div class="flex items-center justify-between pb-2 border-b border-zinc-800/60">
       <div class="flex items-center gap-2">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="text-yellow-500">
@@ -50,24 +56,37 @@ const avgRating = ratings.length > 0
           <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
           <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
         </svg>
-        <span class="text-xs font-black text-zinc-200 uppercase tracking-wider">Friends' Ratings</span>
-        <span class="text-[10px] font-bold text-zinc-400 bg-zinc-800 px-2 py-0.5 rounded-full border border-zinc-700">
-          {ratings.length}
-        </span>
+        <span class="text-xs font-black text-zinc-200 uppercase tracking-wider">{title}</span>
       </div>
+    </div>
 
-      {avgRating && (
-        <div class="flex items-center gap-1.5 bg-yellow-500/10 border border-yellow-500/20 px-2.5 py-0.5 rounded-lg">
+    {showTabs && (
+      <div class="flex gap-1 p-1 bg-zinc-950/60 border border-zinc-800/60 rounded-lg">
+        {groups.map((g, i) => (
+          <button
+            type="button"
+            data-ratings-tab={g.key}
+            class={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-bold uppercase tracking-wider transition-colors cursor-pointer ${i === 0 ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
+          >
+            {g.label}
+            <span class="text-[10px] text-zinc-400">{g.ratings.length}</span>
+          </button>
+        ))}
+      </div>
+    )}
+
+    {groups.map((g, i) => (
+    <div data-ratings-panel={g.key} class={i === 0 ? "flex flex-col gap-3" : "hidden flex-col gap-3"}>
+      {avg(g.ratings) && (
+        <div class="flex items-center gap-1.5 bg-yellow-500/10 border border-yellow-500/20 px-2.5 py-0.5 rounded-lg self-start">
           <span class="text-[10px] font-bold text-yellow-500/90 uppercase tracking-wider">Avg</span>
           <span class="text-xs font-black text-yellow-400 flex items-center gap-0.5">
-            <span>★</span> {avgRating}
+            <span>★</span> {avg(g.ratings)}
           </span>
         </div>
       )}
-    </div>
-
     <div class="flex flex-col gap-2.5 max-h-56 overflow-y-auto pr-1">
-      {ratings.map((r) => (
+      {g.ratings.map((r) => (
         <div class="p-2.5 rounded-xl bg-zinc-950/60 border border-zinc-800/60 hover:border-zinc-700 transition-colors flex flex-col gap-2">
           <div class="flex items-center justify-between gap-3">
             <div class="flex items-center gap-2.5 min-w-0">
@@ -120,5 +139,28 @@ const avgRating = ratings.length > 0
         </div>
       ))}
     </div>
+    </div>
+    ))}
   </div>
 )}
+
+<script>
+  document.querySelectorAll<HTMLElement>("[data-ratings-widget]").forEach((widget) => {
+    const tabs = widget.querySelectorAll<HTMLElement>("[data-ratings-tab]");
+    tabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        tabs.forEach((t) => {
+          const active = t === tab;
+          t.classList.toggle("bg-zinc-800", active);
+          t.classList.toggle("text-zinc-100", active);
+          t.classList.toggle("text-zinc-500", !active);
+        });
+        widget.querySelectorAll<HTMLElement>("[data-ratings-panel]").forEach((panel) => {
+          const on = panel.dataset.ratingsPanel === tab.dataset.ratingsTab;
+          panel.classList.toggle("hidden", !on);
+          panel.classList.toggle("flex", on);
+        });
+      });
+    });
+  });
+</script>

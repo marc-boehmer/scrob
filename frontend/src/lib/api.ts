@@ -1168,6 +1168,16 @@ export interface FriendEntry {
   avatar_url: string | null;
 }
 
+export interface NotificationEntry {
+  id: number;
+  type: "friend_request" | "friend_rating";
+  is_read: boolean;
+  created_at: string;
+  actor: FriendEntry;
+  rating: number | null;
+  media: { title: string; type: string; link: string | null } | null;
+}
+
 export interface ProfileFollowEntry {
   id: number;
   display_name: string;
@@ -1260,6 +1270,7 @@ export interface FriendRating {
   season_number?: number | null;
   episode_order?: string | null;
   rated_at: string;
+  is_friend?: boolean;
 }
 
 export interface Comment {

@@ -3177,7 +3177,7 @@ async def manually_collect(
         if not check_tmdb_key(tmdb_key):
             raise HTTPException(status_code=404, detail="Media not found and no TMDB key configured")
         try:
-            from core.enrichment import enrich_media, create_media_safely, enrich_media_safely
+            from core.enrichment import enrich_media, create_media_safely, enrich_media_safely, get_or_create_show_by_tmdb
             if body.media_type == MediaType.movie:
                 data = await tmdb.get_movie(body.tmdb_id, api_key=tmdb_key)
                 title = data.get("title", "")
@@ -3190,48 +3190,7 @@ async def manually_collect(
                         detail="series_tmdb_id, season_number, and episode_number are required to collect a new episode",
                     )
                 
-                # Link to parent show
-                from models.show import Show as ShowModel
-                show_q = await db.execute(
-                    select(ShowModel).where(ShowModel.tmdb_id == body.series_tmdb_id)
-                )
-                show = show_q.scalar_one_or_none()
-                if not show:
-                    # If show doesn't exist locally, create it first so the episode has a show_id
-                    show_data = await tmdb.get_show(body.series_tmdb_id, api_key=tmdb_key)
-                    show = ShowModel(
-                        tmdb_id=body.series_tmdb_id,
-                        title=show_data.get("name", ""),
-                        poster_path=tmdb.poster_url(show_data.get("poster_path")),
-                        backdrop_path=tmdb.poster_url(show_data.get("backdrop_path"), size="w1280"),
-                        tmdb_rating=show_data.get("vote_average"),
-                        status=show_data.get("status"),
-                        first_air_date=show_data.get("first_air_date"),
-                        last_air_date=show_data.get("last_air_date"),
-                        tmdb_data={
-                            "genres": [g["name"] for g in show_data.get("genres", [])],
-                            "seasons": [
-                                {
-                                    "season_number": s["season_number"],
-                                    "poster_path": tmdb.poster_url(s.get("poster_path")),
-                                    "episode_count": s["episode_count"],
-                                    "name": s["name"],
-                                }
-                                for s in show_data.get("seasons", [])
-                            ],
-                            "networks": [
-                                {
-                                    "id": n.get("id"),
-                                    "name": n.get("name"),
-                                    "logo_path": n.get("logo_path"),
-                                    "origin_country": n.get("origin_country"),
-                                }
-                                for n in show_data.get("networks", [])
-                            ],
-                        }
-                    )
-                    db.add(show)
-                    await db.flush()
+                show = await get_or_create_show_by_tmdb(db, body.series_tmdb_id, tmdb_key)
 
                 ep_data = await tmdb.get_episode(
                     body.series_tmdb_id, body.season_number, body.episode_number, api_key=tmdb_key

@@ -19,6 +19,7 @@ from .playback_session import PlaybackSession
 from .playback_progress import PlaybackProgress
 from .follows import Follow
 from .friendship import Friendship
+from .notification import Notification
 from .global_settings import GlobalSettings
 from .season_override import ShowSeasonOverride
 from .media_request import MediaRequest

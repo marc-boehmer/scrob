@@ -227,6 +227,28 @@ const bottomNavItem = (active: boolean) =>
               <svg xmlns="http://www.w3.org/2000/svg" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
             </span>
           </button>
+          {user && (
+            <!-- Notifications -->
+            <div class="relative">
+              <button id="notif-btn" class="relative p-3 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 transition-colors cursor-pointer" aria-label="Notifications" aria-haspopup="true">
+                <svg xmlns="http://www.w3.org/2000/svg" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+                <span id="notif-badge" class="hidden absolute -top-1 -right-1 min-w-[1.1rem] h-[1.1rem] px-1 items-center justify-center text-[10px] font-bold bg-blue-500 text-white rounded-full border-2 border-zinc-950"></span>
+              </button>
+              <div id="notif-panel" class="hidden fixed sm:absolute left-3 right-3 sm:left-auto sm:right-0 top-16 sm:top-full mt-0 sm:mt-3 sm:w-96 z-50">
+                <div class="bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl overflow-hidden text-sm">
+                  <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+                    <span class="font-bold text-zinc-100">Notifications</span>
+                    <div class="flex items-center gap-3">
+                      <button id="notif-read-all" class="hidden text-xs font-semibold text-blue-400 hover:text-blue-300 cursor-pointer">Mark all as read</button>
+                      <button id="notif-clear" class="hidden text-xs font-semibold text-red-400 hover:text-red-300 cursor-pointer">Clear all</button>
+                    </div>
+                  </div>
+                  <ul id="notif-list" class="max-h-96 overflow-y-auto divide-y divide-zinc-800/60"></ul>
+                  <p id="notif-empty" class="hidden px-4 py-8 text-center text-zinc-500">No notifications yet.</p>
+                </div>
+              </div>
+            </div>
+          )}
           <!-- User menu (click-toggled) -->
           {user ? (
             <div class="relative">
@@ -696,6 +718,165 @@ const bottomNavItem = (active: boolean) =>
     });
   </script>
 
+  {user && (
+    <script>
+      // ── Notifications bell ─────────────────────────────────────────────────────
+      const notifBtn = document.getElementById('notif-btn');
+      const notifPanel = document.getElementById('notif-panel');
+      const notifBadge = document.getElementById('notif-badge');
+      const notifList = document.getElementById('notif-list');
+      const notifEmpty = document.getElementById('notif-empty');
+      const notifReadAll = document.getElementById('notif-read-all');
+      const notifClear = document.getElementById('notif-clear');
+
+      type NotifItem = {
+        id: number;
+        type: 'friend_request' | 'friend_rating';
+        is_read: boolean;
+        created_at: string;
+        actor: { id: number; display_name: string };
+        rating: number | null;
+        media: { title: string; type: string; season_number: number | null; episode_number: number | null; link: string | null } | null;
+      };
+
+      const authHeaders = () => ({ 'Authorization': `Bearer ${(window as any).__AUTH_TOKEN__ ?? ''}` });
+
+      const setBadge = (count: number) => {
+        if (!notifBadge) return;
+        notifBadge.textContent = count > 99 ? '99+' : String(count);
+        notifBadge.classList.toggle('hidden', count === 0);
+        notifBadge.classList.toggle('flex', count > 0);
+        notifReadAll?.classList.toggle('hidden', count === 0);
+      };
+
+      const timeAgo = (iso: string) => {
+        const secs = Math.max(0, (Date.now() - new Date(iso.endsWith('Z') ? iso : iso + 'Z').getTime()) / 1000);
+        if (secs < 60) return 'just now';
+        if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+        if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+        return `${Math.floor(secs / 86400)}d ago`;
+      };
+
+      const describe = (n: NotifItem) => {
+        if (n.type === 'friend_request') return { text: ' sent you a friend request', href: '/friends' };
+        const rated = n.rating != null ? ` (${n.rating}/10)` : '';
+        const m = n.media;
+        let what = m?.title ?? 'a title';
+        if (m?.type === 'episode' && m.season_number != null && m.episode_number != null) what += ` S${m.season_number}E${m.episode_number}`;
+        else if (m?.type === 'series' && m.season_number != null) what += ` – Season ${m.season_number}`;
+        return { text: ` rated ${what}${rated}`, href: m?.link ?? `/profile/${n.actor.id}` };
+      };
+
+      const renderNotifications = (items: NotifItem[]) => {
+        if (!notifList || !notifEmpty) return;
+        notifList.replaceChildren();
+        notifEmpty.classList.toggle('hidden', items.length > 0);
+        notifClear?.classList.toggle('hidden', items.length === 0);
+        for (const n of items) {
+          const { text, href } = describe(n);
+          const li = document.createElement('li');
+          const a = document.createElement('a');
+          a.href = href;
+          a.className = 'flex items-start gap-3 px-4 py-3 hover:bg-zinc-800 transition-colors';
+          a.addEventListener('click', () => {
+            if (!n.is_read) fetch(`/api/proxy/notifications/${n.id}/read`, { method: 'POST', headers: authHeaders(), keepalive: true }).catch(() => {});
+          });
+
+          const dot = document.createElement('span');
+          dot.className = `mt-1.5 w-2 h-2 rounded-full shrink-0 ${n.is_read ? 'bg-transparent' : 'bg-blue-500'}`;
+          const body = document.createElement('span');
+          body.className = 'min-w-0 flex-1';
+          const msg = document.createElement('span');
+          msg.className = 'block text-zinc-300';
+          const who = document.createElement('span');
+          who.className = 'font-bold text-zinc-100';
+          who.textContent = n.actor.display_name;
+          msg.append(who, text);
+          const when = document.createElement('span');
+          when.className = 'block text-xs text-zinc-500 mt-0.5';
+          when.textContent = timeAgo(n.created_at);
+          body.append(msg, when);
+          a.append(dot, body);
+          if (n.type === 'friend_request') {
+            li.className = 'flex items-center pr-3';
+            a.classList.add('flex-1', 'min-w-0');
+            const actions = document.createElement('div');
+            actions.className = 'flex items-center gap-1.5 shrink-0';
+            const respond = (label: string, title: string, cls: string, method: 'POST' | 'DELETE', path: string) => {
+              const btn = document.createElement('button');
+              btn.type = 'button';
+              btn.title = title;
+              btn.setAttribute('aria-label', title);
+              btn.className = `w-8 h-8 flex items-center justify-center rounded-lg border text-base font-bold cursor-pointer transition-colors ${cls}`;
+              btn.textContent = label;
+              btn.addEventListener('click', async () => {
+                actions.querySelectorAll('button').forEach((b) => ((b as HTMLButtonElement).disabled = true));
+                try {
+                  const res = await fetch(`/api/proxy/friends/${n.actor.id}${path}`, { method, headers: authHeaders() });
+                  if (res.ok) { await loadNotifications(); return; }
+                } catch {}
+                actions.querySelectorAll('button').forEach((b) => ((b as HTMLButtonElement).disabled = false));
+              });
+              return btn;
+            };
+            actions.append(
+              respond('✓', 'Accept friend request', 'border-green-500/30 bg-green-500/10 text-green-400 hover:bg-green-500/20', 'POST', '/accept'),
+              respond('✕', 'Decline friend request', 'border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20', 'DELETE', ''),
+            );
+            li.append(a, actions);
+          } else {
+            li.append(a);
+          }
+          notifList.append(li);
+        }
+      };
+
+      const refreshUnread = async () => {
+        try {
+          const res = await fetch('/api/proxy/notifications/unread-count', { headers: authHeaders() });
+          if (res.ok) setBadge((await res.json()).unread_count ?? 0);
+        } catch {}
+      };
+
+      const loadNotifications = async () => {
+        try {
+          const res = await fetch('/api/proxy/notifications', { headers: authHeaders() });
+          if (!res.ok) return;
+          const data = await res.json();
+          renderNotifications(data.notifications ?? []);
+          setBadge(data.unread_count ?? 0);
+        } catch {}
+      };
+
+      notifBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const opening = notifPanel?.classList.contains('hidden') ?? false;
+        notifPanel?.classList.toggle('hidden', !opening);
+        document.getElementById('user-menu')?.classList.add('hidden');
+        if (opening) loadNotifications();
+      });
+      notifPanel?.addEventListener('click', (e) => e.stopPropagation());
+      document.addEventListener('click', () => notifPanel?.classList.add('hidden'));
+      document.getElementById('user-menu-btn')?.addEventListener('click', () => notifPanel?.classList.add('hidden'));
+
+      notifReadAll?.addEventListener('click', async () => {
+        try {
+          await fetch('/api/proxy/notifications/read-all', { method: 'POST', headers: authHeaders() });
+        } catch {}
+        loadNotifications();
+      });
+
+      notifClear?.addEventListener('click', async () => {
+        try {
+          await fetch('/api/proxy/notifications', { method: 'DELETE', headers: authHeaders() });
+        } catch {}
+        loadNotifications();
+      });
+
+      refreshUnread();
+      setInterval(() => { if (!document.hidden) refreshUnread(); }, 60_000);
+    </script>
+  )}
   <script define:vars={{ __layoutAuthToken: token ?? '', __use24h: use24h, __isAdmin: user?.is_admin === true, __radarrCustomizeOnAdd: radarrCustomizeOnAdd, __sonarrCustomizeOnAdd: sonarrCustomizeOnAdd }}>
     // Expose the server-side token for the card action script (httpOnly cookie is not JS-readable)
     window.__AUTH_TOKEN__ = __layoutAuthToken;
@@ -1150,6 +1331,7 @@ const bottomNavItem = (active: boolean) =>
 
     // Local media id - the only handle a TVDB-only episode has (no tmdb_id).
     let _ratingMediaId = '';
+    let _ratingEpisodeCtx: { series_tmdb_id?: number; season_number?: number; episode_number?: number } | null = null;
     function openRatingPopover(
       btn: HTMLElement | null,
       tmdbId: string,
@@ -1161,9 +1343,12 @@ const bottomNavItem = (active: boolean) =>
       mediaId: string = '',
       // tmdbId is really a TheTVDB id (show with no TMDB counterpart).
       tvdbOnly: boolean = false,
+      // Lets the backend create an episode it hasn't stored yet.
+      episodeCtx: { series_tmdb_id?: number; season_number?: number; episode_number?: number } | null = null,
     ) {
       _activeRatingBtn = btn;
       _ratingMediaId = mediaId;
+      _ratingEpisodeCtx = episodeCtx;
       const popover = document.getElementById('rating-popover')!;
       const starsEl = document.getElementById('rating-stars')!;
       const removeBtn = document.getElementById('rating-remove')!;
@@ -1219,6 +1404,7 @@ const bottomNavItem = (active: boolean) =>
             if (_ratingMediaId) ratingBody.media_id = Number(_ratingMediaId);
             if (seasonNumber !== null) ratingBody.season_number = seasonNumber;
             if (seasonNumber !== null && nonAiredOrder(episodeOrder)) ratingBody.episode_order = episodeOrder;
+            if (mediaType === 'episode' && _ratingEpisodeCtx) Object.assign(ratingBody, _ratingEpisodeCtx);
             await apiFetch('/ratings', 'POST', ratingBody);
             if (btn) {
               btn.dataset.userRating = String(i);
@@ -2546,7 +2732,10 @@ const bottomNavItem = (active: boolean) =>
             }
           : null;
         if (document.getElementById('rating-popover')!.classList.contains('hidden') || _activeRatingBtn !== btn) {
-          openRatingPopover(btn, tmdbId, mediaType, currentRating, ratingSeason, episodeOrder, rateInfo, mediaId, card.dataset.tvdbOnly === 'true');
+          const episodeCtx = mediaType === 'episode' && card.dataset.showTmdbId && card.dataset.season && card.dataset.episodeNumber
+            ? { series_tmdb_id: Number(card.dataset.showTmdbId), season_number: Number(card.dataset.season), episode_number: Number(card.dataset.episodeNumber) }
+            : null;
+          openRatingPopover(btn, tmdbId, mediaType, currentRating, ratingSeason, episodeOrder, rateInfo, mediaId, card.dataset.tvdbOnly === 'true', episodeCtx);
         } else {
           closeRatingPopover();
         }
