@@ -4,7 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, delete, or_
+from sqlalchemy import select, desc, delete, or_, and_
 from sqlalchemy.orm import aliased
 
 from db import get_db
@@ -13,9 +13,11 @@ from models.ratings import Rating
 from models.base import MediaType
 from models.users import UserSettings
 from core.friends import friend_ids
+from core.notifications import notify_friends_of_rating
 from models.profile import UserProfileData, PrivacyLevel
 from dependencies import get_current_user, get_current_user_or_api_key
 from models.users import User
+from models.follows import Follow
 from core.enrichment import enrich_media, create_media_safely
 from core.identity import find_media, coerce_id
 from core.episode_order import validate_episode_order, normalize_order_key, is_aired_order
@@ -34,6 +36,9 @@ class RatingIn(BaseModel):
     review: Optional[str] = None
     season_number: Optional[int] = None
     episode_order: Optional[str] = None
+    # Needed to create a not-yet-known episode (media_type "episode"), together with season_number.
+    series_tmdb_id: Optional[int] = None
+    episode_number: Optional[int] = None
 
 
 
@@ -106,9 +111,29 @@ async def submit_rating(
             elif media_type == MediaType.series:
                 title = None  # enrich_media will populate all fields including title
             else:
-                raise HTTPException(status_code=400, detail="Cannot create media row for episodes via rating")
-            media, _created = await create_media_safely(db, body.tmdb_id, media_type, title=title or "")
-            await enrich_media(media, api_key=api_key)
+                if not body.series_tmdb_id or body.season_number is None or body.episode_number is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="series_tmdb_id, season_number and episode_number are required to rate a new episode",
+                    )
+                from core.enrichment import get_or_create_show_by_tmdb, enrich_media_safely
+                show = await get_or_create_show_by_tmdb(db, body.series_tmdb_id, api_key)
+                ep_data = await tmdb.get_episode(
+                    body.series_tmdb_id, body.season_number, body.episode_number, api_key=api_key
+                )
+                media, _created = await create_media_safely(
+                    db,
+                    body.tmdb_id,
+                    MediaType.episode,
+                    title=ep_data.get("name", ""),
+                    season_number=body.season_number,
+                    episode_number=body.episode_number,
+                    show_id=show.id,
+                )
+                media = await enrich_media_safely(db, media, api_key=api_key, series_tmdb_id=body.series_tmdb_id)
+            if media_type != MediaType.episode:
+                media, _created = await create_media_safely(db, body.tmdb_id, media_type, title=title or "")
+                await enrich_media(media, api_key=api_key)
         except HTTPException:
             raise
         except Exception as e:
@@ -149,6 +174,7 @@ async def submit_rating(
             episode_order=effective_episode_order,
         )
         db.add(rating)
+        await notify_friends_of_rating(db, current_user.id, media, body.rating, effective_season)
 
     await db.commit()
     await db.refresh(rating)
@@ -218,6 +244,7 @@ async def get_friends_ratings(
         return {"ratings": []}
 
     friends_subq = await friend_ids(db, current_user.id)
+    friend_set = set(friends_subq)
 
     effective_season = None if mt == MediaType.episode else season_number
     effective_episode_order = None
@@ -231,7 +258,13 @@ async def get_friends_ratings(
         .outerjoin(UserProfileData, User.id == UserProfileData.user_id)
         .where(
             Rating.media_id == media.id,
-            Rating.user_id.in_(friends_subq),
+            or_(
+                Rating.user_id.in_(friends_subq),
+                and_(
+                    Rating.user_id.in_(select(Follow.following_id).where(Follow.follower_id == current_user.id)),
+                    UserProfileData.privacy_level == PrivacyLevel.public,
+                ),
+            ),
             Rating.season_number == effective_season if effective_season is not None else Rating.season_number.is_(None),
         )
     )
@@ -265,6 +298,7 @@ async def get_friends_ratings(
             "season_number": r.season_number,
             "episode_order": r.episode_order,
             "rated_at": r.rated_at.isoformat(),
+            "is_friend": u.id in friend_set,
         })
 
     return {"ratings": ratings_list}

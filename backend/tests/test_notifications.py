@@ -1,0 +1,82 @@
+import os
+import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
+
+os.environ.setdefault("SECRET_KEY", "test-secret")
+os.environ.setdefault("DATABASE_URL", "******localhost/test")
+
+from core.notifications import notify_friends_of_rating
+from models.base import MediaType
+from models.profile import PrivacyLevel
+
+
+class _Scalar:
+    def __init__(self, value):
+        self.value = value
+
+    def scalar_one_or_none(self):
+        return self.value
+
+
+class _Rows:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self.rows
+
+
+def _db(privacy, followers=()):
+    db = SimpleNamespace(add=Mock())
+    db.execute = AsyncMock(side_effect=[_Scalar(privacy), _Rows(list(followers))])
+    return db
+
+
+class FriendRatingNotificationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_notifies_every_friend(self):
+        db = _db(PrivacyLevel.friends_only)
+        media = SimpleNamespace(id=9, media_type=MediaType.movie)
+        with patch("core.notifications.friend_ids", AsyncMock(return_value=[2, 3])):
+            await notify_friends_of_rating(db, 1, media, 8.5)
+        added = [c.args[0] for c in db.add.call_args_list]
+        self.assertEqual([n.user_id for n in added], [2, 3])
+        self.assertTrue(all(n.type == "friend_rating" and n.actor_id == 1 and n.media_id == 9 and n.rating == 8.5 for n in added))
+
+    async def test_followers_of_a_public_profile_are_notified_once(self):
+        db = _db(PrivacyLevel.public, followers=[3, 4])
+        media = SimpleNamespace(id=9, media_type=MediaType.movie)
+        with patch("core.notifications.friend_ids", AsyncMock(return_value=[2, 3])):
+            await notify_friends_of_rating(db, 1, media, 8)
+        self.assertEqual([c.args[0].user_id for c in db.add.call_args_list], [2, 3, 4])
+
+    async def test_followers_are_not_notified_for_friends_only_profiles(self):
+        db = _db(PrivacyLevel.friends_only, followers=[4])
+        media = SimpleNamespace(id=9, media_type=MediaType.movie)
+        with patch("core.notifications.friend_ids", AsyncMock(return_value=[2])):
+            await notify_friends_of_rating(db, 1, media, 8)
+        self.assertEqual([c.args[0].user_id for c in db.add.call_args_list], [2])
+
+    async def test_private_profile_notifies_nobody(self):
+        db = _db(PrivacyLevel.private)
+        media = SimpleNamespace(id=9, media_type=MediaType.series)
+        with patch("core.notifications.friend_ids", AsyncMock(return_value=[2])):
+            await notify_friends_of_rating(db, 1, media, 7)
+        db.add.assert_not_called()
+
+    async def test_season_and_episode_ratings_notify_too(self):
+        db = _db(PrivacyLevel.public)
+        db.execute.side_effect = [_Scalar(PrivacyLevel.public), _Rows([]), _Scalar(PrivacyLevel.public), _Rows([])]
+        with patch("core.notifications.friend_ids", AsyncMock(return_value=[2])):
+            await notify_friends_of_rating(db, 1, SimpleNamespace(id=9, media_type=MediaType.series), 7, 3)
+            await notify_friends_of_rating(db, 1, SimpleNamespace(id=10, media_type=MediaType.episode), 6)
+        season, episode = [c.args[0] for c in db.add.call_args_list]
+        self.assertEqual((season.media_id, season.season_number), (9, 3))
+        self.assertEqual((episode.media_id, episode.season_number), (10, None))
+
+
+if __name__ == "__main__":
+    unittest.main()

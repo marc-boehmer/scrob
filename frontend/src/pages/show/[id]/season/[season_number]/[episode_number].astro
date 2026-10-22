@@ -156,10 +156,9 @@ const thumbnail = episode?.still_path || show?.poster_path || null;
               </div>
 
               <FriendsRatingsSection
-                mediaType="series"
-                tmdbId={Number(id)}
-                seasonNumber={apiSeason}
-                episodeNumber={apiEpisode}
+                mediaType="episode"
+                tmdbId={episode.tmdb_id}
+                mediaId={episode.id}
               />
             </div>
 

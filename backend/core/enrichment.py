@@ -446,3 +446,48 @@ async def enrich_media_safely(
             tvdb_lang=tvdb_lang,
         ),
     )
+
+
+async def get_or_create_show_by_tmdb(db: AsyncSession, series_tmdb_id: int, api_key: str | None):
+    """Return the local Show for a TMDB id, creating it from TMDB if missing."""
+    from models.show import Show as ShowModel
+    show = (await db.execute(
+        select(ShowModel).where(ShowModel.tmdb_id == series_tmdb_id)
+    )).scalar_one_or_none()
+    if show:
+        return show
+    show_data = await tmdb.get_show(series_tmdb_id, api_key=api_key)
+    show = ShowModel(
+        tmdb_id=series_tmdb_id,
+        title=show_data.get("name", ""),
+        poster_path=tmdb.poster_url(show_data.get("poster_path")),
+        backdrop_path=tmdb.poster_url(show_data.get("backdrop_path"), size="w1280"),
+        tmdb_rating=show_data.get("vote_average"),
+        status=show_data.get("status"),
+        first_air_date=show_data.get("first_air_date"),
+        last_air_date=show_data.get("last_air_date"),
+        tmdb_data={
+            "genres": [g["name"] for g in show_data.get("genres", [])],
+            "seasons": [
+                {
+                    "season_number": s["season_number"],
+                    "poster_path": tmdb.poster_url(s.get("poster_path")),
+                    "episode_count": s["episode_count"],
+                    "name": s["name"],
+                }
+                for s in show_data.get("seasons", [])
+            ],
+            "networks": [
+                {
+                    "id": n.get("id"),
+                    "name": n.get("name"),
+                    "logo_path": n.get("logo_path"),
+                    "origin_country": n.get("origin_country"),
+                }
+                for n in show_data.get("networks", [])
+            ],
+        },
+    )
+    db.add(show)
+    await db.flush()
+    return show

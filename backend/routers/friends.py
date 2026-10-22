@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from core.friends import ACCEPTED, PENDING, get_friendship
+from core.notifications import clear_friend_request, notify_friend_request
 from db import get_db
 from dependencies import get_current_user
 from models.friendship import Friendship
@@ -77,10 +78,12 @@ async def send_request(user_id: int, current_user: User = Depends(get_current_us
             return {"status": "request_sent"}
         # They already asked us: sending a request back accepts theirs.
         existing.status = ACCEPTED
+        await clear_friend_request(db, requester_id=user_id, addressee_id=current_user.id)
         await db.commit()
         return {"status": "friends"}
 
     db.add(Friendship(requester_id=current_user.id, addressee_id=user_id, status=PENDING))
+    notify_friend_request(db, requester_id=current_user.id, addressee_id=user_id)
     await db.commit()
     return {"status": "request_sent"}
 
@@ -91,6 +94,7 @@ async def accept_request(user_id: int, current_user: User = Depends(get_current_
     if not friendship or friendship.status != PENDING or friendship.addressee_id != current_user.id:
         raise HTTPException(status_code=404, detail="No pending friend request from this user.")
     friendship.status = ACCEPTED
+    await clear_friend_request(db, requester_id=user_id, addressee_id=current_user.id)
     await db.commit()
     return {"status": "friends"}
 
@@ -100,6 +104,7 @@ async def remove_friendship(user_id: int, current_user: User = Depends(get_curre
     """Unfriend, cancel an outgoing request, or decline an incoming one."""
     friendship = await get_friendship(db, current_user.id, user_id)
     if friendship:
+        await clear_friend_request(db, friendship.requester_id, friendship.addressee_id)
         await db.delete(friendship)
         await db.commit()
     return {"status": "none"}
