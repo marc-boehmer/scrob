@@ -454,7 +454,7 @@ class UserProfileResponse(BaseModel):
     streaming_services: list[str] = []
     content_language: Optional[str] = None
     metadata_language: Optional[str] = None
-    privacy_level: PrivacyLevel = PrivacyLevel.private
+    privacy_level: PrivacyLevel = PrivacyLevel.friends_only
     avatar_url: Optional[str] = None
 
     @field_validator('movie_genres', 'show_genres', 'disliked_genres', 'streaming_services', mode='before')
@@ -467,13 +467,16 @@ class UserProfileResponse(BaseModel):
 
 class PublicProfileResponse(BaseModel):
     id: int
-    username: str
+    username: Optional[str] = None
     display_name: str
     bio: Optional[str] = None
     country: Optional[str] = None
     movie_genres: list[str] = []
     show_genres: list[str] = []
-    created_at: datetime
+    created_at: Optional[datetime] = None
+    privacy_level: PrivacyLevel = PrivacyLevel.friends_only
+    is_limited: bool = False
+    friendship_status: str = "none"
     # Stats
     total_watched: int = 0
     total_collected: int = 0

@@ -26,6 +26,7 @@ from models.show import Show as ShowModel
 from models.comments import Comment as CommentModel
 from models.lists import List as ListModel, ListItem
 from models.follows import Follow
+from core.friends import are_friends, friendship_statuses, get_friendship, status_for
 from models.global_settings import GlobalSettings
 from core.config import settings
 import schemas
@@ -55,8 +56,8 @@ async def get_public_access_status(db: AsyncSession = Depends(get_db)):
     }
 
 
-async def _check_profile_access(user_id: int, current_user, db: AsyncSession):
-    """Returns (user, profile) or raises 404/403."""
+async def _load_profile_access(user_id: int, current_user, db: AsyncSession):
+    """Returns (user, profile, has_full_access) or raises 404/403."""
     user_result = await db.execute(select(User).where(User.id == user_id))
     user = user_result.scalar_one_or_none()
     if not user:
@@ -67,38 +68,29 @@ async def _check_profile_access(user_id: int, current_user, db: AsyncSession):
 
     is_owner = current_user and current_user.id == user_id
     is_admin = current_user and current_user.role == "admin"
-    privacy = profile.privacy_level if profile else PrivacyLevel.private
+    privacy = profile.privacy_level if profile else PrivacyLevel.friends_only
 
-    is_mutual_follow = False
+    is_friend = False
     if current_user and not is_owner and privacy == PrivacyLevel.friends_only:
-        mutual_q = await db.execute(
-            select(func.count())
-            .select_from(Follow)
-            .where(Follow.follower_id == current_user.id, Follow.following_id == user_id)
-            .where(
-                select(Follow.id)
-                .where(Follow.follower_id == user_id, Follow.following_id == current_user.id)
-                .exists()
-            )
-        )
-        is_mutual_follow = mutual_q.scalar_one() > 0
+        is_friend = await are_friends(db, current_user.id, user_id)
 
-    if not (is_owner or is_admin or privacy == PrivacyLevel.public or is_mutual_follow):
-        raise HTTPException(status_code=403, detail="This profile is private")
+    has_full_access = is_owner or is_admin or privacy == PrivacyLevel.public or is_friend
 
-    # A request with no valid session (no JWT, or an API key that doesn't match
-    # any user) reaches here as current_user=None and only gets this far because
-    # privacy is public. Gate that specific case on the admin's global toggle too,
-    # server-side, rather than trusting the frontend's page-level gate alone,
-    # since that gate lives in middleware and can be bypassed by any request
-    # carrying an api_key query param (even an invalid one), which the proxy
-    # treats as "public route" before ever checking this setting.
-    if not current_user and privacy == PrivacyLevel.public:
+    # Do not let anonymous or invalid-API-key requests bypass the global
+    # logged-out navigation setting, including requests for limited profiles.
+    if not current_user:
         gs_result = await db.execute(select(GlobalSettings).where(GlobalSettings.id == 1))
         gs = gs_result.scalar_one_or_none()
         if not (gs and gs.enable_logged_out_navigation):
             raise HTTPException(status_code=403, detail="This profile is private")
 
+    return user, profile, has_full_access
+
+
+async def _check_profile_access(user_id: int, current_user, db: AsyncSession):
+    user, profile, has_full_access = await _load_profile_access(user_id, current_user, db)
+    if not has_full_access:
+        raise HTTPException(status_code=403, detail="This profile is private")
     return user, profile
 
 
@@ -473,23 +465,20 @@ async def search_users(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_or_api_key),
 ):
-    """Unlike viewing a single profile/list by ID, this is a directory-style
-    enumeration of every public/friends_only user matching a pattern, so it
-    stays behind real authentication regardless of the enable_logged_out_navigation
-    toggle, there's no anonymous "browse all public users" use case to support."""
+    """Authenticated user search includes private users but returns only their
+    display name and privacy level to anyone other than the account owner."""
     if len(q.strip()) < 1:
         return {"results": []}
 
     pattern = f"%{q.strip()}%"
 
-    # Match on username or display_name, only public profiles (+ own profile)
+    # Match any account on username or display name; private profiles are
+    # included so users can identify them without exposing their profile data.
     users_q = await db.execute(
         select(User, UserProfileData)
         .outerjoin(UserProfileData, UserProfileData.user_id == User.id)
         .where(
             (User.username.ilike(pattern)) | (UserProfileData.display_name.ilike(pattern)),
-            (UserProfileData.privacy_level.in_([PrivacyLevel.public, PrivacyLevel.friends_only]))
-            | (User.id == current_user.id),
         )
         .order_by(User.username)
         .limit(24)
@@ -498,7 +487,17 @@ async def search_users(
     if not rows:
         return {"results": []}
 
-    user_ids = [u.id for u, _ in rows]
+    friendship_map = await friendship_statuses(db, current_user.id, [u.id for u, _ in rows])
+
+    def _has_access(u, p) -> bool:
+        level = p.privacy_level if p else PrivacyLevel.friends_only
+        return (
+            u.id == current_user.id
+            or level == PrivacyLevel.public
+            or (level == PrivacyLevel.friends_only and friendship_map.get(u.id) == "friends")
+        )
+
+    user_ids = [u.id for u, p in rows if _has_access(u, p)]
 
     # Batch stats
     movies_q = await db.execute(
@@ -544,17 +543,32 @@ async def search_users(
     if current_user:
         fol_q = await db.execute(
             select(Follow.following_id)
-            .where(Follow.follower_id == current_user.id, Follow.following_id.in_(user_ids))
+            .where(Follow.follower_id == current_user.id, Follow.following_id.in_([u.id for u, _ in rows]))
         )
         following_set = {row[0] for row in fol_q.all()}
 
     results = []
     for u, p in rows:
         display_name = p.display_name if p and p.display_name else u.username
+        is_self = current_user is not None and current_user.id == u.id
+        privacy_level = p.privacy_level if p else PrivacyLevel.friends_only
+        if not _has_access(u, p):
+            results.append({
+                "id": u.id,
+                "username": u.username,
+                "display_name": display_name,
+                "privacy_level": privacy_level,
+                "is_following": u.id in following_set,
+                "friendship_status": friendship_map.get(u.id, "none"),
+                "is_self": False,
+            })
+            continue
+
         results.append({
             "id": u.id,
             "username": u.username,
             "display_name": display_name,
+            "privacy_level": privacy_level,
             "avatar_url": f"/profile/avatar/{u.id}" if (p and p.avatar_path) else None,
             "country": p.country if p else None,
             "movies_watched": movies_map.get(u.id, 0),
@@ -563,7 +577,8 @@ async def search_users(
             "total_rated": rated_map.get(u.id, 0),
             "follower_count": followers_map.get(u.id, 0),
             "is_following": u.id in following_set,
-            "is_self": current_user is not None and current_user.id == u.id,
+            "friendship_status": friendship_map.get(u.id, "none"),
+            "is_self": is_self,
         })
 
     return {"results": results}
@@ -580,6 +595,12 @@ async def follow_user(
     target = await db.execute(select(User).where(User.id == user_id))
     if not target.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="User not found.")
+    profile_result = await db.execute(
+        select(UserProfileData).where(UserProfileData.user_id == user_id)
+    )
+    profile = profile_result.scalar_one_or_none()
+    if not profile or profile.privacy_level != PrivacyLevel.public:
+        raise HTTPException(status_code=403, detail="You can only follow public profiles. Send a friend request instead.")
     existing = await db.execute(
         select(Follow).where(Follow.follower_id == current_user.id, Follow.following_id == user_id)
     )
@@ -603,13 +624,33 @@ async def unfollow_user(
     return {"status": "unfollowed"}
 
 
-@router.get("/{user_id}", response_model=schemas.PublicProfileResponse)
+@router.get("/{user_id}", response_model=schemas.PublicProfileResponse, response_model_exclude_unset=True)
 async def get_public_profile(
     user_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_optional_user_or_api_key),
 ):
-    user, profile = await _check_profile_access(user_id, current_user, db)
+    user, profile, has_full_access = await _load_profile_access(user_id, current_user, db)
+    if not has_full_access:
+        is_following = False
+        friendship_status = "none"
+        if current_user and current_user.id != user_id:
+            friendship_status = status_for(await get_friendship(db, current_user.id, user_id), current_user.id)
+        if current_user:
+            follow_check = await db.execute(
+                select(Follow.id).where(
+                    Follow.follower_id == current_user.id, Follow.following_id == user_id
+                )
+            )
+            is_following = follow_check.scalar_one_or_none() is not None
+        return {
+            "id": user.id,
+            "is_following": is_following,
+            "friendship_status": friendship_status,
+            "display_name": profile.display_name if profile and profile.display_name else user.username,
+            "privacy_level": profile.privacy_level if profile else PrivacyLevel.friends_only,
+            "is_limited": True,
+        }
     is_owner = current_user and current_user.id == user_id
     is_admin = current_user and current_user.role == "admin"
 
@@ -861,17 +902,16 @@ async def get_public_profile(
     ]
 
     is_following = False
-    is_mutual_follow = False
+    is_friend = False
+    friendship_status = "none"
     if current_user and current_user.id != user_id:
         follow_check = await db.execute(
             select(Follow).where(Follow.follower_id == current_user.id, Follow.following_id == user_id)
         )
         is_following = follow_check.scalar_one_or_none() is not None
-        if is_following:
-            follow_back = await db.execute(
-                select(Follow).where(Follow.follower_id == user_id, Follow.following_id == current_user.id)
-            )
-            is_mutual_follow = follow_back.scalar_one_or_none() is not None
+        friendship = await get_friendship(db, current_user.id, user_id)
+        friendship_status = status_for(friendship, current_user.id)
+        is_friend = friendship_status == "friends"
 
     # --- Lists ---
     lists_query = (
@@ -889,9 +929,9 @@ async def get_public_profile(
         .order_by(ListModel.updated_at.desc())
     )
     if not (is_owner or is_admin):
-        # Mutual follows also get this user's friends-only lists (#210).
+        # Friends also get this user's friends-only lists (#210).
         visible = [PrivacyLevel.public]
-        if is_mutual_follow:
+        if is_friend:
             visible.append(PrivacyLevel.friends_only)
         lists_query = lists_query.where(ListModel.privacy_level.in_(visible))
 
@@ -945,6 +985,8 @@ async def get_public_profile(
         "id": user.id,
         "username": user.username,
         "display_name": display_name,
+        "privacy_level": profile.privacy_level if profile else PrivacyLevel.friends_only,
+        "is_limited": False,
         "avatar_url": f"/profile/avatar/{user.id}" if (profile and profile.avatar_path) else None,
         "bio": profile.bio if profile else None,
         "country": profile.country if profile else None,
@@ -967,6 +1009,7 @@ async def get_public_profile(
         "followers": followers_preview,
         "following": following_preview,
         "is_following": is_following,
+        "friendship_status": friendship_status,
     }
 
 

@@ -21,7 +21,7 @@ class UserProfileData(Base):
     streaming_services  : Mapped[Optional[list[str]]]  = mapped_column(JSONB)
     content_language    : Mapped[Optional[str]]        = mapped_column(String(10))
     metadata_language   : Mapped[Optional[str]]        = mapped_column(String(10))
-    privacy_level       : Mapped[PrivacyLevel]         = mapped_column(SQLEnum(PrivacyLevel), default=PrivacyLevel.private, nullable=False, server_default=PrivacyLevel.private.value)
+    privacy_level       : Mapped[PrivacyLevel]         = mapped_column(SQLEnum(PrivacyLevel), default=PrivacyLevel.friends_only, nullable=False, server_default=PrivacyLevel.friends_only.value)
     avatar_path         : Mapped[Optional[str]]        = mapped_column(String(255))
 
     user: Mapped["User"] = relationship(back_populates="profile")

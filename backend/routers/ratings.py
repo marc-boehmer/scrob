@@ -12,7 +12,7 @@ from models.media import Media
 from models.ratings import Rating
 from models.base import MediaType
 from models.users import UserSettings
-from models.follows import Follow
+from core.friends import friend_ids
 from models.profile import UserProfileData, PrivacyLevel
 from dependencies import get_current_user, get_current_user_or_api_key
 from models.users import User
@@ -217,13 +217,7 @@ async def get_friends_ratings(
     if not media:
         return {"ratings": []}
 
-    f1 = aliased(Follow)
-    f2 = aliased(Follow)
-    friends_subq = (
-        select(f1.following_id)
-        .join(f2, (f1.follower_id == f2.following_id) & (f1.following_id == f2.follower_id))
-        .where(f1.follower_id == current_user.id)
-    )
+    friends_subq = await friend_ids(db, current_user.id)
 
     effective_season = None if mt == MediaType.episode else season_number
     effective_episode_order = None
