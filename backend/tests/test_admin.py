@@ -157,12 +157,16 @@ class AdminCreateUserTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         from models.users import User
+        from models.email_activation import EmailActivation
+        from models.password_reset import PasswordResetToken
 
         self.engine = create_async_engine(
             "sqlite+aiosqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool,
         )
         async with self.engine.begin() as conn:
             await conn.run_sync(User.__table__.create)
+            await conn.run_sync(EmailActivation.__table__.create)
+            await conn.run_sync(PasswordResetToken.__table__.create)
         self.Session = async_sessionmaker(self.engine, expire_on_commit=False)
         self.User = User
 
@@ -227,6 +231,56 @@ class AdminCreateUserTests(unittest.IsolatedAsyncioTestCase):
             "username": "x", "email": "not-an-email", "password": "x",
         })
         self.assertEqual(res.status_code, 422)
+
+    async def test_admin_changes_email_immediately_and_clears_pending_tokens(self):
+        from models.email_activation import EmailActivation
+        from models.password_reset import PasswordResetToken
+
+        async with self.Session() as db:
+            user = self.User(id=1, email="alice@example.com", username="alice", api_key="alice-key")
+            db.add(user)
+            await db.flush()
+            db.add(EmailActivation(user_id=user.id, email="pending@example.com", token="activation-token"))
+            db.add(PasswordResetToken(user_id=user.id, token="reset-token"))
+            await db.commit()
+            user_id = user.id
+
+        response = await self.client.patch(
+            f"/admin/users/{user_id}/email",
+            json={"email": "  ALICE.NEW@example.com "},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["email"], "alice.new@example.com")
+
+        async with self.Session() as db:
+            user = await db.get(self.User, user_id)
+            self.assertEqual(user.email, "alice.new@example.com")
+            self.assertTrue(user.email_confirmed)
+            self.assertEqual(
+                (await db.execute(select(EmailActivation).where(EmailActivation.user_id == user_id)))
+                .scalars().all(),
+                [],
+            )
+            self.assertEqual(
+                (await db.execute(select(PasswordResetToken).where(PasswordResetToken.user_id == user_id)))
+                .scalars().all(),
+                [],
+            )
+
+    async def test_admin_cannot_change_email_to_another_users_address(self):
+        async with self.Session() as db:
+            db.add_all([
+                self.User(id=1, email="alice@example.com", username="alice", api_key="alice-key"),
+                self.User(id=2, email="bob@example.com", username="bob", api_key="bob-key"),
+            ])
+            await db.commit()
+
+        response = await self.client.patch(
+            "/admin/users/1/email",
+            json={"email": "BOB@example.com"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("already in use", response.json()["detail"])
 
 
 if __name__ == "__main__":

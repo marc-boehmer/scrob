@@ -9,6 +9,7 @@ from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.future import select
 from sqlalchemy import delete, func, update
+from sqlalchemy.exc import IntegrityError
 
 from db import get_db, engine
 from models.users import User
@@ -194,6 +195,45 @@ async def create_user(
         created_at=user.created_at,
         avatar_url=None,
     )
+
+
+@router.patch("/users/{user_id}/email", response_model=schemas.AdminUser)
+async def update_user_email(
+    user_id: int,
+    body: schemas.AdminEmailUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    email = str(body.email).strip().lower()
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if target.email.lower() != email:
+        existing = await db.execute(
+            select(User).where(func.lower(User.email) == email, User.id != target.id)
+        )
+        if existing.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="That email address is already in use.")
+
+        from models.email_activation import EmailActivation
+        from models.password_reset import PasswordResetToken
+
+        await db.execute(delete(EmailActivation).where(EmailActivation.user_id == target.id))
+        await db.execute(delete(PasswordResetToken).where(PasswordResetToken.user_id == target.id))
+        target.email = email
+        target.email_confirmed = True
+        try:
+            await db.commit()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise HTTPException(
+                status_code=400,
+                detail="That email address is already in use.",
+            ) from exc
+        await db.refresh(target)
+    return target
 
 
 @router.patch("/users/{user_id}/toggle-admin", response_model=schemas.AdminUser)

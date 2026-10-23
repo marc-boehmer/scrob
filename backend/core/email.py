@@ -1,4 +1,5 @@
 import asyncio
+import html as html_lib
 import logging
 import re
 import smtplib
@@ -69,31 +70,46 @@ async def send_email(to: str, subject: str, html: str) -> None:
     await asyncio.to_thread(_send_sync, to, subject, html)
 
 
-async def send_activation_email(to: str, token: str) -> None:
+async def send_activation_email(to: str, token: str, *, email_change: bool = False) -> None:
     link = f"{settings.server_url}/auth/activate/{token}"
+    if email_change:
+        link += "?email_change=true"
+    heading = "Confirm your new email" if email_change else "Confirm your email"
+    message = (
+        "Click the button below to confirm this address for your Scrob account."
+        if email_change
+        else "Thanks for registering on Scrob. Click the button below to activate your account."
+    )
+    button = "Confirm email" if email_change else "Activate account"
+    subject = "Confirm your Scrob email address" if email_change else "Activate your Scrob account"
+    ignore_message = (
+        "If you didn't request this change, you can safely ignore this email."
+        if email_change
+        else "If you didn't create an account, you can safely ignore this email."
+    )
     html = f"""
     <!DOCTYPE html>
     <html>
     <body style="font-family: sans-serif; background: #18181b; color: #f4f4f5; padding: 40px;">
       <div style="max-width: 480px; margin: 0 auto; background: #27272a; border: 1px solid #3f3f46; border-radius: 12px; padding: 32px;">
-        <h1 style="font-size: 24px; font-weight: 700; margin-bottom: 8px;">Confirm your email</h1>
+        <h1 style="font-size: 24px; font-weight: 700; margin-bottom: 8px;">{heading}</h1>
         <p style="color: #a1a1aa; margin-bottom: 24px;">
-          Thanks for registering on Scrob. Click the button below to activate your account.
+          {message}
           This link expires in <strong style="color: #f4f4f5;">24 hours</strong>.
         </p>
         <a href="{link}"
            style="display: inline-block; background: #f4f4f5; color: #09090b; font-weight: 700;
                   padding: 12px 24px; border-radius: 8px; text-decoration: none;">
-          Activate account
+          {button}
         </a>
         <p style="color: #71717a; font-size: 12px; margin-top: 24px;">
-          If you didn't create an account, you can safely ignore this email.
+          {ignore_message}
         </p>
       </div>
     </body>
     </html>
     """
-    await send_email(to, "Activate your Scrob account", html)
+    await send_email(to, subject, html)
 
 
 async def send_password_reset_email(to: str, token: str) -> None:
@@ -121,3 +137,54 @@ async def send_password_reset_email(to: str, token: str) -> None:
     </html>
     """
     await send_email(to, "Reset your Scrob password", html)
+
+
+def email_enabled() -> bool:
+    return bool(settings.smtp_address)
+
+
+def _card(heading: str, body_html: str, button: str | None = None) -> str:
+    link = settings.server_url
+    btn = (
+        f'''<a href="{link}" style="display: inline-block; background: #f4f4f5; color: #09090b; font-weight: 700;
+                  padding: 12px 24px; border-radius: 8px; text-decoration: none;">{button}</a>'''
+        if button else ""
+    )
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <body style="font-family: sans-serif; background: #18181b; color: #f4f4f5; padding: 40px;">
+      <div style="max-width: 480px; margin: 0 auto; background: #27272a; border: 1px solid #3f3f46; border-radius: 12px; padding: 32px;">
+        <h1 style="font-size: 24px; font-weight: 700; margin-bottom: 8px;">{heading}</h1>
+        <div style="color: #a1a1aa; margin-bottom: 24px;">{body_html}</div>
+        {btn}
+      </div>
+    </body>
+    </html>
+    """
+
+
+async def send_friend_request_email(to: str, requester_name: str) -> None:
+    name = html_lib.escape(requester_name)
+    html = _card(
+        "New friend request",
+        f"<p><strong style=\"color: #f4f4f5;\">{name}</strong> sent you a friend request on Scrob.</p>",
+        "View request",
+    )
+    await send_email(to, f"{requester_name} sent you a friend request on Scrob", html)
+
+
+async def send_rating_digest_email(to: str, items: list[tuple[str, str, float | None]]) -> None:
+    """`items` are (actor name, media title, rating) tuples."""
+    rows = "".join(
+        f"<li><strong style=\"color: #f4f4f5;\">{html_lib.escape(actor)}</strong> rated "
+        f"{html_lib.escape(title)}" + (f" {rating:g}" if rating is not None else "") + "</li>"
+        for actor, title, rating in items
+    )
+    count = len(items)
+    html = _card(
+        "Your daily rating digest",
+        f"<p>{count} new rating{'s' if count != 1 else ''} from your friends:</p><ul>{rows}</ul>",
+        "Open Scrob",
+    )
+    await send_email(to, f"{count} new rating{'s' if count != 1 else ''} from your friends on Scrob", html)

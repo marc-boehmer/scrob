@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     smtp_username: Optional[str] = None
     smtp_password: Optional[str] = None
     from_email: Optional[str] = None
+    # UTC time (hour 0-23, minute 0-59) at which the daily friend-rating digest email is sent.
+    digest_hour_utc: int = 17
+    digest_minute_utc: int = 0
 
     @property
     def db_url(self) -> str:

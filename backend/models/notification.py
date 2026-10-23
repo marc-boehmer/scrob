@@ -20,3 +20,4 @@ class Notification(Base):
     rating     : Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     is_read    : Mapped[bool]            = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     created_at : Mapped[datetime]        = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    emailed_at : Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

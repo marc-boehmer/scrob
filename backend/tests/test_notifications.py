@@ -78,5 +78,38 @@ class FriendRatingNotificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((episode.media_id, episode.season_number), (10, None))
 
 
+class EmailNotificationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_friend_request_email_is_sent_to_confirmed_addressee(self):
+        from core.notifications import email_friend_request
+        addressee = SimpleNamespace(email="a@x.io", email_confirmed=True)
+        requester = SimpleNamespace(display_name="Bob")
+        db = SimpleNamespace(get=AsyncMock(side_effect=[addressee, requester]))
+        with patch("core.email.email_enabled", return_value=True), \
+             patch("core.email.send_friend_request_email", AsyncMock()) as send:
+            await email_friend_request(db, 1, 2)
+        send.assert_awaited_once_with("a@x.io", "Bob")
+
+    async def test_friend_request_email_skipped_without_smtp(self):
+        from core.notifications import email_friend_request
+        db = SimpleNamespace(get=AsyncMock())
+        with patch("core.email.email_enabled", return_value=False):
+            await email_friend_request(db, 1, 2)
+        db.get.assert_not_called()
+
+    async def test_friend_request_email_failure_is_swallowed(self):
+        from core.notifications import email_friend_request
+        db = SimpleNamespace(get=AsyncMock(side_effect=[SimpleNamespace(email="a@x.io", email_confirmed=True), SimpleNamespace(display_name="Bob")]))
+        with patch("core.email.email_enabled", return_value=True), \
+             patch("core.email.send_friend_request_email", AsyncMock(side_effect=OSError("down"))):
+            await email_friend_request(db, 1, 2)
+
+    async def test_digest_skipped_without_smtp(self):
+        from core.notifications import send_rating_digests
+        db = SimpleNamespace(execute=AsyncMock())
+        with patch("core.email.email_enabled", return_value=False):
+            self.assertEqual(await send_rating_digests(db), 0)
+        db.execute.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
