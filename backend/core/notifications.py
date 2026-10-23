@@ -54,7 +54,7 @@ async def notify_friends_of_rating(
 async def email_friend_request(db: AsyncSession, requester_id: int, addressee_id: int) -> None:
     """Immediately email the addressee about a new friend request. Never raises."""
     from core.email import email_enabled, send_friend_request_email
-    from models.users import User
+    from models.users import User, UserSettings
 
     if not email_enabled():
         logger.info("Friend request email skipped: SMTP_ADDRESS is not configured")
@@ -64,6 +64,12 @@ async def email_friend_request(db: AsyncSession, requester_id: int, addressee_id
         requester = await db.get(User, requester_id)
         if not addressee or not requester or not addressee.email_confirmed:
             logger.info("Friend request email skipped: addressee %s missing or email not confirmed", addressee_id)
+            return
+        enabled = (await db.execute(
+            select(UserSettings.email_friend_requests).where(UserSettings.user_id == addressee_id)
+        )).scalar_one_or_none()
+        if enabled is False:
+            logger.info("Friend request email skipped: user %s disabled it", addressee_id)
             return
         logger.info("Sending friend request email to user %s", addressee_id)
         await send_friend_request_email(addressee.email, requester.display_name)
@@ -77,7 +83,7 @@ async def send_rating_digests(db: AsyncSession) -> int:
 
     from core.email import email_enabled, send_rating_digest_email
     from models.media import Media
-    from models.users import User
+    from models.users import User, UserSettings
 
     if not email_enabled():
         logger.info("Rating digest skipped: SMTP_ADDRESS is not configured")
@@ -96,6 +102,12 @@ async def send_rating_digests(db: AsyncSession) -> int:
     media = {m.id: m for m in (await db.execute(
         select(Media).options(selectinload(Media.show)).where(Media.id.in_({n.media_id for n in rows if n.media_id}))
     )).scalars().all()}
+
+    opted_out = set((await db.execute(
+        select(UserSettings.user_id).where(
+            UserSettings.user_id.in_({n.user_id for n in rows}), UserSettings.email_rating_digest.is_(False)
+        )
+    )).scalars().all())
 
     by_user: dict[int, list[Notification]] = {}
     for n in rows:
@@ -116,7 +128,7 @@ async def send_rating_digests(db: AsyncSession) -> int:
         # Mark first so a failing mail server can't cause the same digest to be resent forever.
         await db.execute(update(Notification).where(Notification.id.in_([n.id for n in notes])).values(emailed_at=func.now()))
         await db.commit()
-        if not items or not user or not user.email_confirmed:
+        if not items or not user or not user.email_confirmed or user_id in opted_out:
             continue
         try:
             await send_rating_digest_email(user.email, items)

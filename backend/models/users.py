@@ -194,6 +194,9 @@ class UserSettings(Base):
     # Playing bar drops the session -> star-rating popup), separately per type (#177).
     rate_prompt_movies   : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     rate_prompt_episodes : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    # Email notifications (friend request immediately, friends' ratings as a daily digest)
+    email_friend_requests : Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    email_rating_digest   : Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
 
     # Minutes within which a second watch of the same movie/episode is treated
     # as a duplicate of an existing one and not recorded again, regardless of

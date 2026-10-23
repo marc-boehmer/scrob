@@ -83,11 +83,20 @@ class EmailNotificationTests(unittest.IsolatedAsyncioTestCase):
         from core.notifications import email_friend_request
         addressee = SimpleNamespace(email="a@x.io", email_confirmed=True)
         requester = SimpleNamespace(display_name="Bob")
-        db = SimpleNamespace(get=AsyncMock(side_effect=[addressee, requester]))
+        db = SimpleNamespace(get=AsyncMock(side_effect=[addressee, requester]), execute=AsyncMock(return_value=_Scalar(None)))
         with patch("core.email.email_enabled", return_value=True), \
              patch("core.email.send_friend_request_email", AsyncMock()) as send:
             await email_friend_request(db, 1, 2)
         send.assert_awaited_once_with("a@x.io", "Bob")
+
+    async def test_friend_request_email_skipped_when_user_opted_out(self):
+        from core.notifications import email_friend_request
+        addressee = SimpleNamespace(email="a@x.io", email_confirmed=True)
+        db = SimpleNamespace(get=AsyncMock(side_effect=[addressee, SimpleNamespace(display_name="Bob")]), execute=AsyncMock(return_value=_Scalar(False)))
+        with patch("core.email.email_enabled", return_value=True), \
+             patch("core.email.send_friend_request_email", AsyncMock()) as send:
+            await email_friend_request(db, 1, 2)
+        send.assert_not_awaited()
 
     async def test_friend_request_email_skipped_without_smtp(self):
         from core.notifications import email_friend_request
@@ -98,7 +107,7 @@ class EmailNotificationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_friend_request_email_failure_is_swallowed(self):
         from core.notifications import email_friend_request
-        db = SimpleNamespace(get=AsyncMock(side_effect=[SimpleNamespace(email="a@x.io", email_confirmed=True), SimpleNamespace(display_name="Bob")]))
+        db = SimpleNamespace(get=AsyncMock(side_effect=[SimpleNamespace(email="a@x.io", email_confirmed=True), SimpleNamespace(display_name="Bob")]), execute=AsyncMock(return_value=_Scalar(None)))
         with patch("core.email.email_enabled", return_value=True), \
              patch("core.email.send_friend_request_email", AsyncMock(side_effect=OSError("down"))):
             await email_friend_request(db, 1, 2)

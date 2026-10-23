@@ -327,6 +327,40 @@ try {
           </div>
           <div class="flex items-start justify-between gap-6 p-4 bg-zinc-900/60 rounded-xl border border-zinc-800">
             <div>
+              <p class="text-sm font-semibold text-zinc-100 mb-1">Email notifications</p>
+              <p class="text-xs text-zinc-400">Get emailed about new friend requests right away, and a once-a-day digest of your friends' new ratings (only sent when there are any). Requires email to be set up on this server.</p>
+            </div>
+            <div class="flex flex-col gap-3 shrink-0 mt-0.5">
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-zinc-400 w-24 text-right">Friend requests</span>
+                <label class="relative inline-flex items-center shrink-0 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    name="email_friend_requests"
+                    id="email-friend-requests-toggle"
+                    class="sr-only peer"
+                    checked={settings.email_friend_requests !== false}
+                  />
+                  <div class="w-11 h-6 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500"></div>
+                </label>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-zinc-400 w-24 text-right">Rating digest</span>
+                <label class="relative inline-flex items-center shrink-0 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    name="email_rating_digest"
+                    id="email-rating-digest-toggle"
+                    class="sr-only peer"
+                    checked={settings.email_rating_digest !== false}
+                  />
+                  <div class="w-11 h-6 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500"></div>
+                </label>
+              </div>
+            </div>
+          </div>
+          <div class="flex items-start justify-between gap-6 p-4 bg-zinc-900/60 rounded-xl border border-zinc-800">
+            <div>
               <p class="text-sm font-semibold text-zinc-100 mb-1">Duplicate watch window</p>
               <p class="text-xs text-zinc-400">If a movie or episode is already in your history within this many minutes, a new watch of it (from any source - webhook, import, or manual) is skipped instead of recorded again. A small built-in minimum always applies even if you leave this blank.</p>
             </div>
@@ -1884,6 +1918,8 @@ try {
   for (const [id, key] of [
     ['rate-prompt-movies-toggle', 'rate_prompt_movies'],
     ['rate-prompt-episodes-toggle', 'rate_prompt_episodes'],
+    ['email-friend-requests-toggle', 'email_friend_requests'],
+    ['email-rating-digest-toggle', 'email_rating_digest'],
   ] as const) {
     const el = document.getElementById(id) as HTMLInputElement | null;
     if (!el) continue;

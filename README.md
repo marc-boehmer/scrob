@@ -17,6 +17,7 @@ Scrob syncs your libraries from **Jellyfin**, **Plex**, **Emby**, **Nuvio**, **A
 
 ## Table of Contents
 
+- [What this fork does differently](#what-this-fork-does-differently)
 - [Features](#features)
 - [Screenshots](#screenshots)
 - [Getting Started](#getting-started)
@@ -52,6 +53,16 @@ Scrob syncs your libraries from **Jellyfin**, **Plex**, **Emby**, **Nuvio**, **A
 - [Contributors](#contributors)
 - [Development](#development)
 - [License](#license)
+
+## What this fork does differently
+
+This is a fork of [ellite/scrob](https://github.com/ellite/scrob) that adds a social layer on top of the upstream tracker:
+
+- **Friends instead of just follows**: mutual friend requests (send, accept, decline) with a dedicated **Friends** page. Follows remain as a one-way option for public profiles.
+- **Profile privacy levels**: each profile is **Public**, **Friends only** or **Private** (new accounts default to *Friends only*); lists and ratings respect it.
+- **Friends' ratings**: movie, show, season and episode pages show how your friends and followed users rated the title.
+- **Notifications**: a bell in the top bar for incoming friend requests (accept/decline inline) and for first-time ratings by friends or followed users.
+- **Watchlist**: a personal "want to watch" list for movies and shows, available from cards and detail pages.
 
 ## Features
 
