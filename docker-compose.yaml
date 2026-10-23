@@ -42,6 +42,20 @@ services:
       # Days a login lasts when "Stay logged in" is ticked (7 days otherwise)
       # SESSION_REMEMBER_DAYS: "30"
 
+      # ── Email (optional) ─────────────────────────────────────────────────────
+      # Values are read from your .env file next to this compose file.
+      # Needed for friend request emails and the daily rating digest.
+      SERVER_URL: ${SERVER_URL:-http://localhost:7330}
+      SMTP_ADDRESS: ${SMTP_ADDRESS:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_ENCRYPTION: ${SMTP_ENCRYPTION:-tls}   # tls | ssl | none
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      FROM_EMAIL: ${FROM_EMAIL:-}
+      DIGEST_HOUR_UTC: ${DIGEST_HOUR_UTC:-17}
+      DIGEST_MINUTE_UTC: ${DIGEST_MINUTE_UTC:-0}
+      REQUIRE_EMAIL_VALIDATION: ${REQUIRE_EMAIL_VALIDATION:-false}
+
       # ── Nuvio (optional) ───────────────────────────────────────────────────
       # Set this to the anon/public key when using a self-hosted Nuvio backend.
       # NUVIO_APP_ANON_KEY: ""

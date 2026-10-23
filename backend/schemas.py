@@ -41,6 +41,11 @@ class UserLogin(BaseModel):
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
+
+class ChangeEmailRequest(BaseModel):
+    email: EmailStr
+
+
 class ResetPasswordRequest(BaseModel):
     new_password: str
 
@@ -566,3 +571,7 @@ class AdminUserCreate(BaseModel):
     email    : EmailStr
     password : str = Field(min_length=1)
     is_admin : bool = False
+
+
+class AdminEmailUpdate(BaseModel):
+    email: EmailStr

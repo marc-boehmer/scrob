@@ -200,6 +200,33 @@ const COUNTRIES = [
         </div>
       </section>
 
+      <!-- Account email -->
+      <section>
+        <div class="mb-4 border-b border-zinc-800 pb-2">
+          <h2 class="section-headline">Account Email</h2>
+        </div>
+        <div class="max-w-lg space-y-3">
+          <p class="text-sm text-zinc-400">Current email: <span class="text-zinc-200">{me.email}</span></p>
+          <label for="new-email" class="block text-sm font-medium text-zinc-400">New email address</label>
+          <div class="flex flex-col sm:flex-row gap-3">
+            <input
+              type="email"
+              id="new-email"
+              autocomplete="email"
+              maxlength="255"
+              required
+              class="min-w-0 flex-1 bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+            />
+            <button
+              id="change-email-btn"
+              type="button"
+              class="px-5 py-3 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 font-medium rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+            >Change Email</button>
+          </div>
+          <p class="text-xs text-zinc-500">We’ll email a confirmation link to the new address. Your current email stays in use until you confirm it. SMTP must be configured.</p>
+        </div>
+      </section>
+
       <!-- Privacy -->
       <section>
         <div class="mb-4 border-b border-zinc-800 pb-2">
@@ -467,6 +494,31 @@ const COUNTRIES = [
       (window as Window & { _msgTimeout?: ReturnType<typeof setTimeout> })._msgTimeout =
         setTimeout(() => msg.classList.add('hidden'), 4000);
     }
+
+    const emailInput = document.getElementById('new-email') as HTMLInputElement | null;
+    const changeEmailBtn = document.getElementById('change-email-btn') as HTMLButtonElement | null;
+    changeEmailBtn?.addEventListener('click', async () => {
+      if (!emailInput || !emailInput.reportValidity()) return;
+      changeEmailBtn.disabled = true;
+      const originalText = changeEmailBtn.textContent;
+      changeEmailBtn.textContent = 'Sending…';
+      try {
+        const res = await fetch('/api/proxy/auth/change-email', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: emailInput.value }),
+        });
+        const data = await res.json() as { detail?: string; message?: string };
+        if (!res.ok) throw new Error(data.detail ?? 'Could not request an email change.');
+        showMessage(data.message ?? 'Confirmation link sent to the new email address.');
+        emailInput.value = '';
+      } catch (e: unknown) {
+        showMessage(e instanceof Error ? e.message : 'Could not request an email change.', 'error');
+      } finally {
+        changeEmailBtn.disabled = false;
+        changeEmailBtn.textContent = originalText;
+      }
+    });
 
     // Avatar upload
     const avatarInput = document.getElementById('avatar-input') as HTMLInputElement | null;

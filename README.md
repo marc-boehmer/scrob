@@ -633,7 +633,7 @@ OIDC_AUTO_CREATE_USERS: "true"
 
 ## Email Validation & SMTP
 
-Scrob can require new users to verify their email address before logging in. Providing SMTP settings also enables the **forgot password** link on the login page.
+Scrob can require new users to verify their email address before logging in. Providing SMTP settings also enables the **forgot password** link on the login page and lets signed-in users change their account email from **Profile** settings after confirming the new address.
 
 ```yaml
 REQUIRE_EMAIL_VALIDATION: "true"

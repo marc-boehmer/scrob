@@ -1351,7 +1351,7 @@ export const api = {
     hasUsers: () =>
       get<{ has_users: boolean }>("/auth/has-users"),
     activateEmail: (token: string) =>
-      post<{ success: boolean }>(`/auth/activate/${token}`, undefined),
+      post<{ success: boolean; email_changed: boolean }>(`/auth/activate/${token}`, undefined),
     forgotPassword: (email: string) =>
       post<{ message: string }>("/auth/forgot-password", { email }),
     resetPassword: (token: string, new_password: string) =>
@@ -1370,6 +1370,8 @@ export const api = {
       patch<UserSettings>("/auth/settings", settings, token),
     changePassword: (body: unknown, token: string) =>
       post<{ message: string }>("/auth/change-password", body, token),
+    changeEmail: (email: string, token: string) =>
+      post<{ message: string }>("/auth/change-email", { email }, token),
     deleteAccount: (token: string) =>
       del<{ message: string }>("/auth/me", token),
     regenerateApiKey: (token: string) =>
@@ -1797,6 +1799,8 @@ export const api = {
       patch<GlobalSettings>("/admin/settings", body, token),
     listUsers: (token: string) =>
       get<AdminUser[]>("/admin/users", undefined, token),
+    updateUserEmail: (userId: number, email: string, token: string) =>
+      patch<AdminUser>(`/admin/users/${userId}/email`, { email }, token),
     toggleAdmin: (userId: number, token: string) =>
       patch<AdminUser>(`/admin/users/${userId}/toggle-admin`, undefined, token),
     deleteUser: (userId: number, token: string) =>

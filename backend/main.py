@@ -306,6 +306,32 @@ async def _manual_session_completer():
             print(f"Manual session completer error: {e}")
 
 
+async def _rating_digest_mailer():
+    """Once a day (at DIGEST_HOUR_UTC:DIGEST_MINUTE_UTC), email each user a digest of their friends' new ratings."""
+    import logging
+    from datetime import datetime, timezone
+    from core.notifications import send_rating_digests
+    from db import async_sessionmaker
+
+    log = logging.getLogger("rating_digest")
+    target = (settings.digest_hour_utc, settings.digest_minute_utc)
+    now = datetime.now(timezone.utc)
+    # Don't fire right at startup when today's slot has already passed
+    last_run = now.date() if (now.hour, now.minute) >= target else None
+    while True:
+        await asyncio.sleep(30)
+        now = datetime.now(timezone.utc)
+        if (now.hour, now.minute) < target or last_run == now.date():
+            continue
+        last_run = now.date()
+        try:
+            async with async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)() as db:
+                sent = await send_rating_digests(db)
+            log.info("Rating digest: %d email(s) sent", sent)
+        except Exception:
+            log.exception("Rating digest failed")
+
+
 async def _emby_progress_poller():
     """Emby's webhook system has no progress event (only start/pause/unpause/
     stop), so a PlaybackSession opened by an Emby webhook freezes at the last
@@ -779,9 +805,11 @@ async def lifespan(app: FastAPI):
     emby_progress_task = asyncio.create_task(_emby_progress_poller())
     show_metadata_task = asyncio.create_task(_show_metadata_refresher())
     simkl_token_task = asyncio.create_task(_simkl_token_refresher())
+    rating_digest_task = asyncio.create_task(_rating_digest_mailer())
 
     yield
 
+    rating_digest_task.cancel()
     simkl_token_task.cancel()
     try:
         await simkl_token_task

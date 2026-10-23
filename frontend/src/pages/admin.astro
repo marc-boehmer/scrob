@@ -482,7 +482,7 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
                       {u.username}
                     </div>
                   </td>
-                  <td class="px-4 py-3 text-zinc-400 hidden md:table-cell">{u.email}</td>
+                  <td class="user-email-cell px-4 py-3 text-zinc-400 hidden md:table-cell">{u.email}</td>
                   <td class="px-4 py-3">
                     {u.is_admin
                       ? <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">Admin</span>
@@ -507,7 +507,7 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
                     data-detail-for={u.id}>
                   <td colspan="5" class="px-4 py-4">
                     <div class="space-y-3">
-                      <div class="md:hidden text-xs text-zinc-400">{u.email}</div>
+                      <div class="user-email-mobile md:hidden text-xs text-zinc-400">{u.email}</div>
                       <div>
                         <div class="text-xs text-zinc-500 mb-1">API Key</div>
                         <div class="flex items-center gap-2">
@@ -695,11 +695,30 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
 
 <!-- User actions dropdown (shared by every row, positioned next to the clicked button) -->
 <div id="user-actions-menu" role="menu" class="hidden fixed z-50 flex-col bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl p-2 text-sm">
+  <button type="button" role="menuitem" id="menu-change-email" class="w-full text-left px-3 py-2 rounded-lg transition active:opacity-70 cursor-pointer text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800">Change Email</button>
   <button type="button" role="menuitem" id="menu-toggle-admin" class="w-full text-left px-3 py-2 rounded-lg transition active:opacity-70 cursor-pointer text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed"></button>
   <button type="button" role="menuitem" id="menu-reset-password" class="w-full text-left px-3 py-2 rounded-lg transition active:opacity-70 cursor-pointer text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800">Reset Password</button>
   <button type="button" role="menuitem" id="menu-disable-2fa" class="hidden w-full text-left px-3 py-2 rounded-lg transition active:opacity-70 cursor-pointer text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800">Disable 2FA</button>
   <div class="h-px bg-zinc-800 my-1 mx-1"></div>
   <button type="button" role="menuitem" id="menu-delete-user" class="w-full text-left px-3 py-2 rounded-lg transition active:opacity-70 cursor-pointer text-red-400 hover:text-red-300 hover:bg-zinc-800">Delete</button>
+</div>
+
+<!-- Change user email modal -->
+<div id="change-user-email-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div id="change-user-email-backdrop" class="absolute inset-0 bg-black/70 backdrop-blur-sm"></div>
+  <form id="change-user-email-form" class="relative bg-zinc-900 border border-zinc-800 rounded-3xl p-8 w-full max-w-md shadow-2xl">
+    <h2 class="text-xl font-black text-zinc-100 mb-2">Change Email</h2>
+    <p id="change-user-email-modal-body" class="text-sm text-zinc-400 mb-4"></p>
+    <label for="change-user-email-input" class="sr-only">New email address</label>
+    <input type="email" id="change-user-email-input" autocomplete="email" maxlength="255" required
+      class="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50" />
+    <p id="change-user-email-error" class="hidden text-sm text-red-400 mt-3"></p>
+    <p class="text-xs text-zinc-500 mt-3">This takes effect immediately without email confirmation.</p>
+    <div class="flex gap-3 mt-5">
+      <button type="button" id="change-user-email-cancel" class="flex-1 px-4 py-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold rounded-xl transition-colors text-sm cursor-pointer">Cancel</button>
+      <button type="submit" id="change-user-email-save" class="flex-1 px-4 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl transition-colors text-sm cursor-pointer disabled:opacity-50">Save</button>
+    </div>
+  </form>
 </div>
 
 <!-- Reset Password Modal -->
@@ -1641,6 +1660,66 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeActionsMenu(); });
   window.addEventListener('scroll', closeActionsMenu, true);
   window.addEventListener('resize', closeActionsMenu);
+
+  const changeUserEmailModal = document.getElementById('change-user-email-modal')!;
+  const changeUserEmailForm = document.getElementById('change-user-email-form') as HTMLFormElement;
+  const changeUserEmailInput = document.getElementById('change-user-email-input') as HTMLInputElement;
+  const changeUserEmailError = document.getElementById('change-user-email-error')!;
+  const changeUserEmailSave = document.getElementById('change-user-email-save') as HTMLButtonElement;
+  let changeUserEmailCtx: { userId: number; row: HTMLTableRowElement } | null = null;
+
+  function closeChangeUserEmailModal() {
+    changeUserEmailModal.classList.add('hidden');
+    changeUserEmailForm.reset();
+    changeUserEmailError.classList.add('hidden');
+    changeUserEmailCtx = null;
+  }
+
+  document.getElementById('menu-change-email')!.addEventListener('click', () => {
+    if (!menuCtx) return;
+    const { userId, row } = menuCtx;
+    const email = row.querySelector('.user-email-cell')?.textContent?.trim() ?? '';
+    closeActionsMenu();
+    changeUserEmailCtx = { userId, row };
+    changeUserEmailInput.value = email;
+    document.getElementById('change-user-email-modal-body')!.textContent =
+      `Set a new email address for ${row.querySelector('td')!.textContent!.trim()}.`;
+    changeUserEmailModal.classList.remove('hidden');
+    changeUserEmailInput.focus();
+    changeUserEmailInput.select();
+  });
+
+  document.getElementById('change-user-email-cancel')!.addEventListener('click', closeChangeUserEmailModal);
+  document.getElementById('change-user-email-backdrop')!.addEventListener('click', closeChangeUserEmailModal);
+  changeUserEmailForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!changeUserEmailCtx || !changeUserEmailForm.reportValidity()) return;
+    changeUserEmailSave.disabled = true;
+    changeUserEmailError.classList.add('hidden');
+    try {
+      const { userId, row } = changeUserEmailCtx;
+      const res = await fetch(`/api/proxy/admin/users/${userId}/email`, {
+        method: 'PATCH',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: changeUserEmailInput.value }),
+      });
+      const data = await res.json() as { email?: string; detail?: string };
+      if (!res.ok) throw new Error(data.detail ?? 'Could not update email.');
+      row.querySelector('.user-email-cell')!.textContent = data.email ?? changeUserEmailInput.value;
+      const detailRow = document.querySelector<HTMLTableRowElement>(
+        `tr.user-detail-row[data-detail-for="${userId}"]`,
+      );
+      const mobileEmail = detailRow?.querySelector('.user-email-mobile');
+      if (mobileEmail) mobileEmail.textContent = data.email ?? changeUserEmailInput.value;
+      closeChangeUserEmailModal();
+      showMessage('User email updated.');
+    } catch (err: unknown) {
+      changeUserEmailError.textContent = err instanceof Error ? err.message : 'Could not update email.';
+      changeUserEmailError.classList.remove('hidden');
+    } finally {
+      changeUserEmailSave.disabled = false;
+    }
+  });
 
   menuToggleAdmin.addEventListener('click', async () => {
     if (!menuCtx || menuToggleAdmin.disabled) return;

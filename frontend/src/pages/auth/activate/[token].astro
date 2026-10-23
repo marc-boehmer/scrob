@@ -3,18 +3,22 @@ import Base from "../../../layouts/Base.astro";
 import { api } from "../../../lib/api";
 
 const { token } = Astro.params;
+const isEmailChange = Astro.url.searchParams.get("email_change") === "true";
+const isAlreadyActivated = Astro.url.searchParams.get("success") === "true";
 
 type ActivationState = "success" | "invalid" | "expired" | "error";
-let state: ActivationState = "error";
+let state: ActivationState = isAlreadyActivated ? "success" : "error";
 
-try {
-  await api.auth.activateEmail(token!);
-  state = "success";
-} catch (e: unknown) {
-  const msg = e instanceof Error ? e.message : "";
-  if (msg.includes("invalid")) state = "invalid";
-  else if (msg.includes("expired")) state = "expired";
-  else state = "error";
+if (!isAlreadyActivated) {
+  try {
+    await api.auth.activateEmail(token!);
+    state = "success";
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "";
+    if (msg.includes("invalid")) state = "invalid";
+    else if (msg.includes("expired")) state = "expired";
+    else state = "error";
+  }
 }
 ---
 
@@ -32,10 +36,10 @@ try {
             <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
           </svg>
         </div>
-        <h1 class="text-2xl font-bold text-zinc-100 mb-2">Email confirmed!</h1>
-        <p class="text-sm text-zinc-400 mb-6">Your account is now active. You can sign in.</p>
-        <a href="/login" class="inline-block bg-zinc-100 text-zinc-950 font-bold px-6 py-2 rounded-lg hover:bg-zinc-200 transition-colors">
-          Sign in
+        <h1 class="text-2xl font-bold text-zinc-100 mb-2">{isEmailChange ? "Email address updated!" : "Email confirmed!"}</h1>
+        <p class="text-sm text-zinc-400 mb-6">{isEmailChange ? "Your new email address is now linked to your account." : "Your account is now active. You can sign in."}</p>
+        <a href={isEmailChange ? "/" : "/login"} class="inline-block bg-zinc-100 text-zinc-950 font-bold px-6 py-2 rounded-lg hover:bg-zinc-200 transition-colors">
+          {isEmailChange ? "Continue" : "Sign in"}
         </a>
       </div>
     )}

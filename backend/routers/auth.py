@@ -8,6 +8,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import delete, func, or_, and_
+from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import jwt, JWTError
@@ -131,6 +132,47 @@ async def forgot_password(request: Request, body: schemas.ForgotPasswordRequest,
             logger.error("Failed to send password reset email to %s: %s", user.email, exc)
 
     return {"message": "If that email is registered, a reset link has been sent."}
+
+
+@router.post("/change-email")
+@limiter.limit("5/minute")
+async def change_email(
+    request: Request,
+    body: schemas.ChangeEmailRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not app_settings.smtp_address:
+        raise HTTPException(status_code=503, detail="Email confirmation is not configured.")
+
+    email = str(body.email).strip().lower()
+    if email == current_user.email.lower():
+        raise HTTPException(status_code=400, detail="That is already your email address.")
+
+    existing = await db.execute(
+        select(User).where(func.lower(User.email) == email, User.id != current_user.id)
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="That email address is already in use.")
+
+    await db.execute(delete(EmailActivation).where(EmailActivation.user_id == current_user.id))
+    token = secrets.token_urlsafe(32)
+    activation = EmailActivation(user_id=current_user.id, email=email, token=token)
+    db.add(activation)
+    await db.commit()
+
+    try:
+        await send_activation_email(email, token, email_change=True)
+    except Exception as exc:
+        logger.exception("Failed to send email-change confirmation for user %s", current_user.id)
+        await db.delete(activation)
+        await db.commit()
+        raise HTTPException(
+            status_code=502,
+            detail="Could not send the confirmation email. Please try again.",
+        ) from exc
+
+    return {"message": "A confirmation link has been sent to your new email address."}
 
 
 @router.post("/reset-password/{token}")
@@ -272,31 +314,23 @@ async def login(
 @router.get("/activate/{token}", include_in_schema=False)
 async def activate_email(token: str, db: AsyncSession = Depends(get_db)):
     frontend = app_settings.server_url
-    result = await db.execute(select(EmailActivation).where(EmailActivation.token == token))
-    activation = result.scalar_one_or_none()
-
-    if not activation:
-        return RedirectResponse(f"{frontend}/auth/activate/{token}?error=invalid")
-
-    age = datetime.now(timezone.utc) - activation.created_at.replace(tzinfo=timezone.utc)
-    if age > timedelta(hours=24):
-        await db.delete(activation)
-        await db.commit()
-        return RedirectResponse(f"{frontend}/auth/activate/{token}?error=expired")
-
-    user_result = await db.execute(select(User).where(User.id == activation.user_id))
-    user = user_result.scalar_one_or_none()
-    if user:
-        user.email_confirmed = True
-    await db.delete(activation)
-    await db.commit()
-
-    return RedirectResponse(f"{frontend}/auth/activate/{token}?success=true")
+    try:
+        email_changed = await _complete_email_activation(token, db)
+    except HTTPException as exc:
+        reason = "expired" if exc.detail == "expired" else "invalid"
+        return RedirectResponse(f"{frontend}/auth/activate/{token}?error={reason}")
+    suffix = "&email_change=true" if email_changed else ""
+    return RedirectResponse(f"{frontend}/auth/activate/{token}?success=true{suffix}")
 
 
 @router.post("/activate/{token}", include_in_schema=False)
 async def activate_email_api(token: str, db: AsyncSession = Depends(get_db)):
     """JSON endpoint used by the frontend activation page."""
+    email_changed = await _complete_email_activation(token, db)
+    return {"success": True, "email_changed": email_changed}
+
+
+async def _complete_email_activation(token: str, db: AsyncSession) -> bool:
     result = await db.execute(select(EmailActivation).where(EmailActivation.token == token))
     activation = result.scalar_one_or_none()
 
@@ -311,12 +345,31 @@ async def activate_email_api(token: str, db: AsyncSession = Depends(get_db)):
 
     user_result = await db.execute(select(User).where(User.id == activation.user_id))
     user = user_result.scalar_one_or_none()
+    email_changed = False
     if user:
+        email_changed = activation.email.lower() != user.email.lower()
+        if email_changed:
+            existing = await db.execute(
+                select(User).where(
+                    func.lower(User.email) == activation.email.lower(),
+                    User.id != user.id,
+                )
+            )
+            if existing.scalar_one_or_none():
+                await db.delete(activation)
+                await db.commit()
+                raise HTTPException(status_code=400, detail="email already in use")
+            user.email = activation.email
         user.email_confirmed = True
     await db.delete(activation)
-    await db.commit()
-
-    return {"success": True}
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        await db.execute(delete(EmailActivation).where(EmailActivation.token == token))
+        await db.commit()
+        raise HTTPException(status_code=400, detail="email already in use") from exc
+    return email_changed
 
 
 @router.get("/has-users")
