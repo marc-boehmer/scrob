@@ -1771,7 +1771,7 @@ export const api = {
   },
 
   ratings: {
-    friends: (params: { media_type: string; tmdb_id?: number; tvdb_id?: number; media_id?: number; season_number?: number; episode_number?: number; episode_order?: string }, token: string) =>
+    friends: (params: { media_type: string; tmdb_id?: number; tvdb_id?: number; media_id?: number; season_number?: number; episode_number?: number; episode_order?: string }, token?: string) =>
       get<{ ratings: FriendRating[] }>("/ratings/friends", params, token),
   },
 

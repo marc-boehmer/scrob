@@ -15,9 +15,14 @@ from models.users import UserSettings
 from core.friends import friend_ids
 from core.notifications import notify_friends_of_rating
 from models.profile import UserProfileData, PrivacyLevel
-from dependencies import get_current_user, get_current_user_or_api_key
+from dependencies import (
+    get_current_user,
+    get_current_user_or_api_key,
+    get_optional_user_or_api_key,
+)
 from models.users import User
 from models.follows import Follow
+from models.global_settings import GlobalSettings
 from core.enrichment import enrich_media, create_media_safely
 from core.identity import find_media, coerce_id
 from core.episode_order import validate_episode_order, normalize_order_key, is_aired_order
@@ -226,7 +231,7 @@ async def get_friends_ratings(
     episode_number: Optional[int] = Query(None),
     episode_order: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user_or_api_key),
+    current_user: Optional[User] = Depends(get_optional_user_or_api_key),
 ):
     try:
         mt = MediaType(media_type)
@@ -243,8 +248,18 @@ async def get_friends_ratings(
     if not media:
         return {"ratings": []}
 
-    friends_subq = await friend_ids(db, current_user.id)
-    friend_set = set(friends_subq)
+    if current_user is None:
+        settings_result = await db.execute(
+            select(GlobalSettings).where(GlobalSettings.id == 1)
+        )
+        global_settings = settings_result.scalar_one_or_none()
+        if not (global_settings and global_settings.enable_logged_out_navigation):
+            raise HTTPException(status_code=403, detail="This profile is private")
+        friends_subq = []
+        friend_set = set()
+    else:
+        friends_subq = await friend_ids(db, current_user.id)
+        friend_set = set(friends_subq)
 
     effective_season = None if mt == MediaType.episode else season_number
     effective_episode_order = None
@@ -258,23 +273,29 @@ async def get_friends_ratings(
         .outerjoin(UserProfileData, User.id == UserProfileData.user_id)
         .where(
             Rating.media_id == media.id,
+            Rating.season_number == effective_season if effective_season is not None else Rating.season_number.is_(None),
+        )
+    )
+
+    if current_user is None:
+        stmt = stmt.where(UserProfileData.privacy_level == PrivacyLevel.public)
+    else:
+        stmt = stmt.where(
             or_(
                 Rating.user_id.in_(friends_subq),
                 and_(
                     Rating.user_id.in_(select(Follow.following_id).where(Follow.follower_id == current_user.id)),
                     UserProfileData.privacy_level == PrivacyLevel.public,
                 ),
-            ),
-            Rating.season_number == effective_season if effective_season is not None else Rating.season_number.is_(None),
+            )
         )
-    )
 
     if effective_episode_order is not None:
         stmt = stmt.where(Rating.episode_order == effective_episode_order)
     elif mt == MediaType.series and effective_season is not None:
         stmt = stmt.where(Rating.episode_order.is_(None))
 
-    if current_user.role != "admin":
+    if current_user and current_user.role != "admin":
         stmt = stmt.where(
             UserProfileData.privacy_level.in_([PrivacyLevel.public, PrivacyLevel.friends_only])
         )

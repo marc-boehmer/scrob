@@ -18,7 +18,15 @@ const token = Astro.cookies.get("token")?.value;
 const user = Astro.locals.user;
 
 let ratings: FriendRating[] = [];
-if (user && token) {
+let canViewRatings = !!user && !!token;
+if (!user) {
+  try {
+    canViewRatings = (await api.profile.publicAccessStatus()).enable_logged_out_navigation;
+  } catch (e) {
+    console.error("Failed to load public profile access status", e);
+  }
+}
+if (canViewRatings) {
   try {
     const res = await api.ratings.friends({
       media_type: mediaType,
@@ -38,15 +46,19 @@ if (user && token) {
 const avg = (list: FriendRating[]) =>
   list.length > 0 ? (list.reduce((acc, r) => acc + r.rating, 0) / list.length).toFixed(1) : null;
 
-const groups = [
-  { key: "friends", label: "Friends", ratings: ratings.filter((r) => r.is_friend !== false) },
-  { key: "follows", label: "Follows", ratings: ratings.filter((r) => r.is_friend === false) },
-].filter((g) => g.ratings.length > 0);
+const groups = user
+  ? [
+      { key: "friends", label: "Friends", ratings: ratings.filter((r) => r.is_friend !== false) },
+      { key: "follows", label: "Follows", ratings: ratings.filter((r) => r.is_friend === false) },
+    ].filter((g) => g.ratings.length > 0)
+  : [{ key: "public", label: "Public Profiles", ratings }];
 const showTabs = groups.length > 1;
-const title = groups.length === 1 ? `${groups[0].label}' Ratings` : "Ratings";
+const title = user
+  ? (groups.length === 1 ? `${groups[0].label}' Ratings` : "Ratings")
+  : "Public Ratings";
 ---
 
-{user && groups.length > 0 && (
+{canViewRatings && groups.some((g) => g.ratings.length > 0) && (
   <div class="w-full xl:w-80 shrink-0 bg-zinc-900/70 border border-zinc-800/80 backdrop-blur-md rounded-2xl p-4 shadow-xl flex flex-col gap-3 my-2 xl:my-0" id="friends-ratings-widget" data-ratings-widget>
     <div class="flex items-center justify-between pb-2 border-b border-zinc-800/60">
       <div class="flex items-center gap-2">

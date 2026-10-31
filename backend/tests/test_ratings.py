@@ -1,7 +1,8 @@
 import os
 import unittest
 from datetime import datetime
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("SECRET_KEY", "test-secret")
 os.environ.setdefault(
@@ -182,7 +183,8 @@ class GetFriendsRatingsTests(unittest.IsolatedAsyncioTestCase):
 
         db = _FriendsTestDB()
         user = _FakeUser(id=1, username="alice")
-        res = await ratings_router.get_friends_ratings("movie", tmdb_id=550, db=db, current_user=user)
+        with patch.object(ratings_router, "friend_ids", new=AsyncMock(return_value=[2])):
+            res = await ratings_router.get_friends_ratings("movie", tmdb_id=550, db=db, current_user=user)
         self.assertEqual(len(res["ratings"]), 1)
         r = res["ratings"][0]
         self.assertEqual(r["id"], 1)
@@ -193,6 +195,53 @@ class GetFriendsRatingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r["rating"], 9.5)
         self.assertEqual(r["review"], "Masterpiece!")
         self.assertEqual(r["rated_at"], "2026-10-18T12:00:00")
+
+    async def test_anonymous_viewer_gets_public_profile_ratings_when_enabled(self) -> None:
+        media = _FakeRatedMedia(id=10, tmdb_id=550)
+        rating = _FakeRating(id=1, user_id=2, rating=9.5)
+        public_user = _FakeUser(id=2, username="bob")
+        public_profile = _FakeProfile(display_name="Bob")
+        public_profile.privacy_level = "public"
+
+        class _Result:
+            def __init__(self, value=None, rows=None):
+                self.value = value
+                self.rows = rows or []
+            def scalar_one_or_none(self):
+                return self.value
+            def all(self):
+                return self.rows
+
+        db = SimpleNamespace(
+            execute=AsyncMock(side_effect=[
+                _Result(value=SimpleNamespace(enable_logged_out_navigation=True)),
+                _Result(rows=[(rating, public_user, public_profile)]),
+            ])
+        )
+        with patch.object(ratings_router, "find_media", new=AsyncMock(return_value=media)):
+            response = await ratings_router.get_friends_ratings(
+                "movie", tmdb_id=550, db=db, current_user=None
+            )
+
+        self.assertEqual(len(response["ratings"]), 1)
+        self.assertEqual(response["ratings"][0]["display_name"], "Bob")
+        self.assertFalse(response["ratings"][0]["is_friend"])
+        query = str(db.execute.await_args_list[1].args[0])
+        self.assertIn("user_profiles.privacy_level =", query)
+
+    async def test_anonymous_viewer_is_blocked_when_logged_out_browsing_disabled(self) -> None:
+        media = _FakeRatedMedia(id=10, tmdb_id=550)
+        db = SimpleNamespace(
+            execute=AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: None))
+        )
+        with patch.object(ratings_router, "find_media", new=AsyncMock(return_value=media)):
+            with self.assertRaises(ratings_router.HTTPException) as raised:
+                await ratings_router.get_friends_ratings(
+                    "movie", tmdb_id=550, db=db, current_user=None
+                )
+
+        self.assertEqual(raised.exception.status_code, 403)
+        db.execute.assert_awaited_once()
 
 
 if __name__ == "__main__":

@@ -147,6 +147,8 @@ def _base_url() -> str:
     base = (settings.server_url or "").strip().rstrip("/")
     if base and not re.match(r"^https?://", base, re.I):
         base = f"https://{base}"
+    if not base:
+        logger.warning("SERVER_URL is empty: links in emails will be relative and unusable. Set SERVER_URL to your public URL.")
     return base
 
 
