@@ -241,6 +241,7 @@ class UserSettings(BaseModel):
     rate_prompt_episodes: Optional[bool] = None
     email_friend_requests: Optional[bool] = None
     email_rating_digest: Optional[bool] = None
+    email_friend_media_shares: Optional[bool] = None
     duplicate_watch_window_minutes: Optional[int] = Field(default=None, ge=0)
 
     @field_validator("rpdb_api_key", mode="before")

@@ -748,7 +748,7 @@ const bottomNavItem = (active: boolean) =>
 
       type NotifItem = {
         id: number;
-        type: 'friend_request' | 'friend_rating';
+        type: 'friend_request' | 'friend_rating' | 'friend_media_share';
         is_read: boolean;
         created_at: string;
         actor: { id: number; display_name: string };
@@ -776,8 +776,11 @@ const bottomNavItem = (active: boolean) =>
 
       const describe = (n: NotifItem) => {
         if (n.type === 'friend_request') return { text: ' sent you a friend request', href: '/friends' };
-        const rated = n.rating != null ? ` (${n.rating}/10)` : '';
         const m = n.media;
+        if (n.type === 'friend_media_share') {
+          return { text: ` shared ${m?.title ?? 'a title'} with you`, href: m?.link ?? `/profile/${n.actor.id}` };
+        }
+        const rated = n.rating != null ? ` (${n.rating}/10)` : '';
         let what = m?.title ?? 'a title';
         if (m?.type === 'episode' && m.season_number != null && m.episode_number != null) what += ` S${m.season_number}E${m.episode_number}`;
         else if (m?.type === 'series' && m.season_number != null) what += ` – Season ${m.season_number}`;

@@ -62,6 +62,7 @@ This is a fork of [ellite/scrob](https://github.com/ellite/scrob) that adds a so
 - **Profile privacy levels**: each profile is **Public**, **Friends only** or **Private** (new accounts default to *Friends only*); lists and ratings respect it.
 - **Friends' ratings**: movie, show, season and episode pages show how your friends and followed users rated the title.
 - **Notifications**: a bell in the top bar for incoming friend requests (accept/decline inline) and for first-time ratings by friends or followed users.
+- **Share movies and shows**: send selected friends an in-app notification and, if enabled in their email settings, an email; or share a link through your device's share sheet, email, or copy link.
 - **Watchlist**: a personal "want to watch" list for movies and shows, available from cards and detail pages.
 
 ## Features

@@ -1,0 +1,238 @@
+---
+interface Props {
+  title: string;
+  mediaType: "movie" | "series";
+  tmdbId?: number | null;
+  tvdbId?: number | null;
+  href: string;
+  authenticated: boolean;
+}
+
+const { title, mediaType, tmdbId, tvdbId, href, authenticated } = Astro.props;
+---
+
+<button
+  type="button"
+  data-share-open
+  class="flex items-center gap-2 px-4 py-2 text-sm font-bold leading-none text-zinc-300 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors cursor-pointer"
+  aria-haspopup="dialog"
+  aria-label={`Share ${title}`}
+>
+  <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+    <path d="m8.6 10.7 6.8-4.4m-6.8 7 6.8 4.4"/>
+  </svg>
+  Share
+</button>
+
+<div
+  data-share-modal
+  data-share-title={title}
+  data-share-type={mediaType}
+  data-share-tmdb-id={tmdbId ?? ""}
+  data-share-tvdb-id={tvdbId ?? ""}
+  data-share-href={href}
+  class="hidden fixed inset-0 z-[70] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+  role="dialog"
+  aria-modal="true"
+  aria-label={`Share ${title}`}
+>
+  <div class="w-full max-w-md max-h-[85vh] overflow-y-auto bg-zinc-900 border border-zinc-700 rounded-2xl shadow-2xl">
+    <div class="flex items-center justify-between gap-3 px-5 py-4 border-b border-zinc-800">
+      <div class="min-w-0">
+        <h2 class="text-base font-bold text-zinc-100">Share</h2>
+        <p class="text-sm text-zinc-400 truncate">{title}</p>
+      </div>
+      <button type="button" data-share-close class="p-2 text-zinc-500 hover:text-zinc-100 rounded-lg hover:bg-zinc-800 cursor-pointer" aria-label="Close share dialog">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="p-5 space-y-5">
+      <div class="grid grid-cols-2 gap-2">
+        <button type="button" data-share-native class="hidden px-3 py-2.5 text-sm font-semibold text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-xl cursor-pointer">Share…</button>
+        <button type="button" data-share-copy class="px-3 py-2.5 text-sm font-semibold text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-xl cursor-pointer">Copy link</button>
+        <a data-share-email class="px-3 py-2.5 text-center text-sm font-semibold text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-xl" href="#">Email</a>
+      </div>
+
+      <section class="border-t border-zinc-800 pt-4">
+        <h3 class="text-sm font-bold text-zinc-100 mb-1">Share with friends</h3>
+        {authenticated ? (
+          <>
+            <p class="text-xs text-zinc-500 mb-3">Send an in-app notification to selected friends.</p>
+            <div data-share-friends class="max-h-40 overflow-y-auto space-y-1">
+              <p class="text-sm text-zinc-500 py-2">Loading friends…</p>
+            </div>
+            <button type="button" data-share-send disabled class="w-full mt-3 px-4 py-2.5 text-sm font-bold text-white bg-blue-600 hover:bg-blue-500 rounded-xl disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer">Send</button>
+          </>
+        ) : (
+          <p class="text-sm text-zinc-500">
+            <a href="/login" class="text-blue-400 hover:text-blue-300">Sign in</a> to share directly with your Scrob friends.
+          </p>
+        )}
+      </section>
+      <p data-share-status class="hidden text-sm" role="status" aria-live="polite"></p>
+    </div>
+  </div>
+</div>
+
+<script>
+  type ShareFriend = { id: number; display_name: string; avatar_url: string | null };
+  type ShareWindow = Window & { __AUTH_TOKEN__?: string };
+
+  document.querySelectorAll<HTMLElement>("[data-share-modal]").forEach((modal) => {
+    const openButton = modal.parentElement?.querySelector<HTMLButtonElement>("[data-share-open]");
+    const closeButton = modal.querySelector<HTMLButtonElement>("[data-share-close]");
+    const friendsContainer = modal.querySelector<HTMLElement>("[data-share-friends]");
+    const sendButton = modal.querySelector<HTMLButtonElement>("[data-share-send]");
+    const status = modal.querySelector<HTMLElement>("[data-share-status]");
+    const title = modal.dataset.shareTitle ?? "";
+    const shareUrl = `${window.location.origin}${modal.dataset.shareHref ?? window.location.pathname}`;
+    const selected = new Set<number>();
+    let friendsLoaded = false;
+    let friendsLoading = false;
+
+    const setStatus = (message: string, isError = false) => {
+      if (!status) return;
+      status.textContent = message;
+      status.classList.remove("hidden", "text-red-400", "text-green-400");
+      status.classList.add(isError ? "text-red-400" : "text-green-400");
+    };
+
+    const close = () => {
+      modal.classList.add("hidden");
+      openButton?.focus();
+    };
+
+    const refreshSendState = () => {
+      if (sendButton) sendButton.disabled = selected.size === 0 || friendsLoading;
+    };
+
+    const loadFriends = async () => {
+      if (!friendsContainer || !sendButton || friendsLoaded || friendsLoading) return;
+      friendsLoading = true;
+      refreshSendState();
+      try {
+        const token = (window as ShareWindow).__AUTH_TOKEN__ ?? "";
+        const response = await fetch("/api/proxy/friends", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!response.ok) throw new Error("Could not load your friends.");
+        const data = await response.json() as { friends: ShareFriend[] };
+        friendsContainer.replaceChildren();
+        if (!data.friends.length) {
+          const empty = document.createElement("p");
+          empty.className = "text-sm text-zinc-500 py-2";
+          empty.textContent = "You have no friends to share with yet.";
+          friendsContainer.append(empty);
+        }
+        for (const friend of data.friends) {
+          const label = document.createElement("label");
+          label.className = "flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-zinc-800 cursor-pointer";
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.value = String(friend.id);
+          checkbox.className = "accent-blue-500";
+          checkbox.addEventListener("change", () => {
+            if (checkbox.checked && selected.size >= 20) {
+              checkbox.checked = false;
+              setStatus("You can share with up to 20 friends at once.", true);
+              return;
+            }
+            if (checkbox.checked) selected.add(friend.id);
+            else selected.delete(friend.id);
+            refreshSendState();
+            status?.classList.add("hidden");
+          });
+          const name = document.createElement("span");
+          name.className = "text-sm text-zinc-200";
+          name.textContent = friend.display_name;
+          label.append(checkbox, name);
+          friendsContainer.append(label);
+        }
+        friendsLoaded = true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not load your friends.";
+        friendsContainer.replaceChildren();
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "text-sm text-red-400 hover:text-red-300 cursor-pointer";
+        retry.textContent = "Could not load friends. Retry";
+        retry.addEventListener("click", () => { void loadFriends(); });
+        friendsContainer.append(retry);
+        setStatus(message, true);
+      } finally {
+        friendsLoading = false;
+        refreshSendState();
+      }
+    };
+
+    openButton?.addEventListener("click", () => {
+      modal.classList.remove("hidden");
+      const email = modal.querySelector<HTMLAnchorElement>("[data-share-email]");
+      if (email) {
+        email.href = `mailto:?subject=${encodeURIComponent(`I thought you'd like ${title}`)}&body=${encodeURIComponent(`I thought you'd like ${title}:\n${shareUrl}`)}`;
+      }
+      if (navigator.share) modal.querySelector("[data-share-native]")?.classList.remove("hidden");
+      void loadFriends();
+      closeButton?.focus();
+    });
+    closeButton?.addEventListener("click", close);
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) close();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !modal.classList.contains("hidden")) close();
+    });
+
+    modal.querySelector("[data-share-copy]")?.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(shareUrl);
+        setStatus("Link copied.");
+      } catch {
+        setStatus("Could not copy the link. Check your browser permissions and try again.", true);
+      }
+    });
+    modal.querySelector("[data-share-native]")?.addEventListener("click", async () => {
+      try {
+        await navigator.share({ title, text: `I thought you'd like ${title}`, url: shareUrl });
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setStatus("Could not open the share sheet.", true);
+      }
+    });
+
+    sendButton?.addEventListener("click", async () => {
+      if (!selected.size || !sendButton) return;
+      sendButton.disabled = true;
+      sendButton.textContent = "Sending…";
+      try {
+        const token = (window as ShareWindow).__AUTH_TOKEN__ ?? "";
+        const response = await fetch("/api/proxy/notifications/share", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            recipient_ids: [...selected],
+            media_type: modal.dataset.shareType,
+            title,
+            tmdb_id: modal.dataset.shareTmdbId ? Number(modal.dataset.shareTmdbId) : null,
+            tvdb_id: modal.dataset.shareTvdbId ? Number(modal.dataset.shareTvdbId) : null,
+          }),
+        });
+        if (!response.ok) {
+          const error = await response.json().catch(() => null) as { detail?: string } | null;
+          throw new Error(error?.detail ?? "Could not share this title.");
+        }
+        const result = await response.json() as { sent: number };
+        setStatus(`Shared with ${result.sent} friend${result.sent === 1 ? "" : "s"}.`);
+        selected.clear();
+        friendsContainer?.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((checkbox) => { checkbox.checked = false; });
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not share this title.", true);
+      } finally {
+        sendButton.textContent = "Send";
+        refreshSendState();
+      }
+    });
+  });
+</script>

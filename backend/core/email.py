@@ -143,8 +143,8 @@ def email_enabled() -> bool:
     return bool(settings.smtp_address)
 
 
-def _card(heading: str, body_html: str, button: str | None = None) -> str:
-    link = settings.server_url
+def _card(heading: str, body_html: str, button: str | None = None, button_url: str | None = None) -> str:
+    link = button_url or settings.server_url
     btn = (
         f'''<a href="{link}" style="display: inline-block; background: #f4f4f5; color: #09090b; font-weight: 700;
                   padding: 12px 24px; border-radius: 8px; text-decoration: none;">{button}</a>'''
@@ -172,6 +172,20 @@ async def send_friend_request_email(to: str, requester_name: str) -> None:
         "View request",
     )
     await send_email(to, f"{requester_name} sent you a friend request on Scrob", html)
+
+
+async def send_friend_media_share_email(to: str, sender_name: str, title: str, link: str) -> None:
+    name = html_lib.escape(sender_name)
+    escaped_title = html_lib.escape(title)
+    url = html_lib.escape(f"{settings.server_url.rstrip('/')}{link}", quote=True)
+    html = _card(
+        "A friend shared a title with you",
+        f"<p><strong style=\"color: #f4f4f5;\">{name}</strong> thought you might like "
+        f"<strong style=\"color: #f4f4f5;\">{escaped_title}</strong>.</p>",
+        "View title",
+        button_url=url,
+    )
+    await send_email(to, "A friend shared a title with you on Scrob", html)
 
 
 async def send_rating_digest_email(to: str, items: list[tuple[str, str, float | None]]) -> None:

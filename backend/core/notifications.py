@@ -13,6 +13,7 @@ logger = logging.getLogger("uvicorn.error")
 
 FRIEND_REQUEST = "friend_request"
 FRIEND_RATING = "friend_rating"
+FRIEND_MEDIA_SHARE = "friend_media_share"
 
 
 def notify_friend_request(db: AsyncSession, requester_id: int, addressee_id: int) -> None:
@@ -75,6 +76,33 @@ async def email_friend_request(db: AsyncSession, requester_id: int, addressee_id
         await send_friend_request_email(addressee.email, requester.display_name)
     except Exception:
         logger.exception("Failed to send friend request email")
+
+
+async def email_friend_media_share(
+    db: AsyncSession, sender_id: int, recipient_id: int, title: str, link: str
+) -> None:
+    """Immediately email a friend about a shared title when they have enabled it. Never raises."""
+    from core.email import email_enabled, send_friend_media_share_email
+    from models.users import User, UserSettings
+
+    if not email_enabled():
+        logger.info("Media-share email skipped: SMTP_ADDRESS is not configured")
+        return
+    try:
+        recipient = await db.get(User, recipient_id)
+        sender = await db.get(User, sender_id)
+        if not recipient or not sender or not recipient.email_confirmed:
+            logger.info("Media-share email skipped: recipient %s missing or email not confirmed", recipient_id)
+            return
+        enabled = (await db.execute(
+            select(UserSettings.email_friend_media_shares).where(UserSettings.user_id == recipient_id)
+        )).scalar_one_or_none()
+        if enabled is False:
+            logger.info("Media-share email skipped: user %s disabled it", recipient_id)
+            return
+        await send_friend_media_share_email(recipient.email, sender.display_name, title, link)
+    except Exception:
+        logger.exception("Failed to send media-share email to user %s", recipient_id)
 
 
 async def send_rating_digests(db: AsyncSession) -> int:

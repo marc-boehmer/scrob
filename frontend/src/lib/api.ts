@@ -546,6 +546,7 @@ export interface UserSettings {
   rate_prompt_episodes: boolean;
   email_friend_requests: boolean;
   email_rating_digest: boolean;
+  email_friend_media_shares: boolean;
   duplicate_watch_window_minutes: number | null;
   condense_history_by_show: boolean;
 }
@@ -1172,7 +1173,7 @@ export interface FriendEntry {
 
 export interface NotificationEntry {
   id: number;
-  type: "friend_request" | "friend_rating";
+  type: "friend_request" | "friend_rating" | "friend_media_share";
   is_read: boolean;
   created_at: string;
   actor: FriendEntry;
