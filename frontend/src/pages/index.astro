@@ -19,10 +19,8 @@ if (token) {
   settings = Astro.locals.settings ?? await api.auth.getSettings(token);
   hasTmdbKey = !!settings?.has_effective_tmdb_key;
 } else {
-  // Anonymous visitor - only reachable at all when the admin enabled
-  // logged-out navigation, which already implies a global TMDB key.
-  const status = await api.profile.publicAccessStatus().catch(() => ({ enable_logged_out_navigation: false }));
-  hasTmdbKey = status.enable_logged_out_navigation;
+  const status = await api.profile.publicAccessStatus().catch(() => ({ has_global_tmdb_key: false }));
+  hasTmdbKey = status.has_global_tmdb_key;
 }
 
 let recentMovies: { results: MediaItem[] } = { results: [] };

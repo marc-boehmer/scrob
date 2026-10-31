@@ -809,13 +809,9 @@ async def _get_global_settings(db: AsyncSession) -> GlobalSettings | None:
 
 
 async def require_anon_nav_allowed(db: AsyncSession) -> None:
-    """Raise 401 unless the admin has enabled logged-out navigation and a
-    global TMDB key is set. Called by read-only detail/list endpoints when
-    their optional-auth dependency resolves to no user - re-checked here
-    since these endpoints are reachable directly, not just through a page
-    the frontend middleware already gated."""
+    """Raise 401 unless a global TMDB key is set for public catalog endpoints."""
     gs = await _get_global_settings(db)
-    if not (gs and gs.enable_logged_out_navigation and gs.tmdb_api_key):
+    if not (gs and gs.tmdb_api_key):
         raise HTTPException(status_code=401, detail="Not authenticated")
 
 
@@ -2332,13 +2328,10 @@ async def get_tmdb_list(
     current_user: User | None = Depends(get_optional_user_or_api_key),
 ):
     if current_user is None:
-        # Anonymous browsing is only allowed when the admin has opted in and a
-        # global TMDB key is actually set - mirrors the check in
-        # /profile/public-access-status, which the frontend middleware gates
-        # page access on. Re-checked here since this endpoint is reachable
-        # directly, not just through the page.
+        # Anonymous catalog browsing needs a global TMDB key; re-check here
+        # because this endpoint can be called directly.
         gs = await _get_global_settings(db)
-        if not (gs and gs.enable_logged_out_navigation and gs.tmdb_api_key):
+        if not (gs and gs.tmdb_api_key):
             raise HTTPException(status_code=401, detail="Not authenticated")
         tmdb_key = gs.tmdb_api_key
         # No personal library/watch history to filter on without a user.
@@ -4417,12 +4410,13 @@ async def get_where_to_watch(
                 providers_data = await tmdb.get_show_watch_providers(tmdb_id, api_key=tmdb_key)
 
             country_data = (providers_data.get("results") or {}).get(country, {})
+            watch_url = country_data.get("link")
             for p in country_data.get("flatrate", []):
                 pid = p.get("provider_id")
                 if user_streaming_ids and pid not in user_streaming_ids:
                     continue
                 logo = tmdb.poster_url(p.get("logo_path"), size="w92") if p.get("logo_path") else None
-                _add({"type": "streaming", "name": p.get("provider_name"), "logo": logo})
+                _add({"type": "streaming", "name": p.get("provider_name"), "logo": logo, "url": watch_url})
         except Exception:
             pass
 
@@ -5998,11 +5992,10 @@ async def verify_image_token(request: Request, db: AsyncSession = Depends(get_db
                 token = urllib.parse.unquote(match.group(1))
 
     if not token:
-        # Poster/backdrop images carry no per-user data (just a TMDB path), so
-        # once the admin opts into anonymous browsing, letting those pages
-        # load images without a session is safe too.
+        # Poster/backdrop images carry no per-user data; allow them whenever
+        # the instance has a global catalog key configured.
         gs = await _get_global_settings(db)
-        if gs and gs.enable_logged_out_navigation:
+        if gs and gs.tmdb_api_key:
             return None
         raise credentials_exception
 

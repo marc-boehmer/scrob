@@ -359,8 +359,8 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
               <span class="block text-sm font-semibold text-zinc-200">Allow browsing without an account</span>
               <span class="block text-xs text-zinc-500 mt-0.5">
                 {globalSettings.tmdb_api_key
-                  ? "Lets visitors navigate the app, and view public profiles and lists, without signing in."
-                  : "Requires a TMDB read access token (above) before this can be enabled."}
+                  ? "Lets visitors view public profiles and lists without signing in. Movie and show browsing is always public."
+                  : "Requires a TMDB read access token (above) to enable public profile and list access."}
               </span>
             </div>
             <input type="checkbox" name="enable_logged_out_navigation" id="enable_logged_out_navigation" value="true" class="sr-only peer"

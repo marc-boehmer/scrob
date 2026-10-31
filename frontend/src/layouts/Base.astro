@@ -4,9 +4,18 @@ import logo from "../assets/scrob.png";
 import WatchedAtPicker from "../components/WatchedAtPicker.astro";
 import { api } from "../lib/api";
 
-interface Props { title: string; hideNav?: boolean }
-const { title, hideNav } = Astro.props;
+interface Props {
+  title: string;
+  description?: string;
+  image?: string | null;
+  ogType?: "website" | "video.movie" | "video.tv_show";
+  hideNav?: boolean;
+}
+const { title, description, image, ogType = "website", hideNav } = Astro.props;
 const { user, token } = Astro.locals;
+const pageDescription = (description?.trim() || "Discover and track movies and TV shows with Scrob.").slice(0, 200);
+const pageUrl = new URL(Astro.url.pathname, Astro.url.origin).href;
+const pageImage = image ? new URL(image, Astro.url).href : null;
 
 let pendingRequestCount = 0;
 let radarrCustomizeOnAdd = false;
@@ -23,14 +32,8 @@ if (user?.is_admin && token) {
   } catch {}
 }
 
-// Anonymous visitors get Movies/Shows nav links too, but only once the admin
-// has enabled logged-out navigation (the pages themselves 302 to /login
-// otherwise - see middleware.ts).
-let showAnonNavLinks = false;
-if (!user) {
-  const status = await api.profile.publicAccessStatus().catch(() => ({ enable_logged_out_navigation: false }));
-  showAnonNavLinks = status.enable_logged_out_navigation;
-}
+// Catalog navigation and search are public; user collections remain private.
+const showAnonNavLinks = !user;
 const blurExplicit = Astro.cookies.get("blur_explicit")?.value !== "false";
 const use24h = Astro.cookies.get("time_format_24h")?.value === "true";
 
@@ -61,6 +64,18 @@ const bottomNavItem = (active: boolean) =>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>{title} - Scrob</title>
+  <meta name="description" content={pageDescription} />
+  <link rel="canonical" href={pageUrl} />
+  <meta property="og:type" content={ogType} />
+  <meta property="og:title" content={`${title} - Scrob`} />
+  <meta property="og:description" content={pageDescription} />
+  <meta property="og:url" content={pageUrl} />
+  {pageImage && <meta property="og:image" content={pageImage} />}
+  {pageImage && <meta property="og:image:alt" content={`${title} artwork`} />}
+  <meta name="twitter:card" content={pageImage ? "summary_large_image" : "summary"} />
+  <meta name="twitter:title" content={`${title} - Scrob`} />
+  <meta name="twitter:description" content={pageDescription} />
+  {pageImage && <meta name="twitter:image" content={pageImage} />}
   <link rel="icon" type="image/png" href="/favicon-96x96.png" sizes="96x96" />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="shortcut icon" href="/favicon.ico" />
@@ -185,7 +200,7 @@ const bottomNavItem = (active: boolean) =>
             <div class="hidden md:flex items-center gap-6 text-sm">
               <a href="/movies" class={navLink(activeMovies)}>Movies</a>
               <a href="/shows" class={navLink(activeShows)}>Shows</a>
-              <a href="/lists" class={navLink(activeLists)}>Lists</a>
+              {user && <a href="/lists" class={navLink(activeLists)}>Lists</a>}
               {user && (
                 <a href="/history" class={navLink(activeHistory)}>History</a>
               )}
@@ -260,7 +275,7 @@ const bottomNavItem = (active: boolean) =>
                 <svg xmlns="http://www.w3.org/2000/svg" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="sm:hidden text-zinc-400"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
                 <svg id="user-chevron" xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="opacity-50 hidden sm:block transition-transform duration-200"><path d="m6 9 6 6 6-6"/></svg>
               </button>
-              <div id="user-menu" class="hidden absolute top-full right-0 mt-2 sm:mt-3 w-48 z-50">
+              <div id="user-menu" class="hidden absolute top-full right-0 mt-2 sm:mt-3 w-48 max-h-[calc(100dvh-var(--nav-h,4.5rem)-6rem-env(safe-area-inset-bottom))] overflow-y-auto overscroll-contain sm:max-h-none sm:overflow-visible z-50">
                 <div class="bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl p-2 text-base">
                   <a href="/discover" class="flex items-center gap-2.5 px-3 py-2 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 active:opacity-70 rounded-lg transition">
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 opacity-70"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
@@ -397,10 +412,12 @@ const bottomNavItem = (active: boolean) =>
         <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="15" x="2" y="7" rx="2"/><polyline points="17 2 12 7 7 2"/></svg>
         Shows
       </a>
-      <a href="/lists" class={bottomNavItem(activeLists)}>
-        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-        Lists
-      </a>
+      {user && (
+        <a href="/lists" class={bottomNavItem(activeLists)}>
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+          Lists
+        </a>
+      )}
       {user && (
         <a href="/history" class={bottomNavItem(activeHistory)}>
           <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>

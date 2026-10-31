@@ -16,13 +16,11 @@ if (token) {
   ]);
   hasTmdbKey = !!settings?.has_effective_tmdb_key;
 } else {
-  // Anonymous visitor - only reachable at all when the admin enabled
-  // logged-out navigation, which already implies a global TMDB key. There's
-  // no profile to personalise with, so this page falls back to exactly the
+  // There's no profile to personalise with, so this page falls back to exactly the
   // same generic sections a freshly-registered user with no profile data
   // set yet would see.
-  const status = await api.profile.publicAccessStatus().catch(() => ({ enable_logged_out_navigation: false }));
-  hasTmdbKey = status.enable_logged_out_navigation;
+  const status = await api.profile.publicAccessStatus().catch(() => ({ has_global_tmdb_key: false }));
+  hasTmdbKey = status.has_global_tmdb_key;
 }
 const watchRegion: string = profileData?.country ?? 'US';
 const hasProfileData = !!(
@@ -796,4 +794,3 @@ function skeletonWide() {
   }
 
 </script>
-

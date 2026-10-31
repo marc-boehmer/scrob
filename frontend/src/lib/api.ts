@@ -756,7 +756,7 @@ export interface MediaItem {
     audio_languages: string[];
     subtitle_languages: string[];
   } | null;
-  where_to_watch?: { type: string; name: string; logo: string | null }[];
+  where_to_watch?: { type: string; name: string; logo: string | null; url?: string | null }[];
   collection?: {
     id: number;
     name: string;
@@ -1069,7 +1069,7 @@ export interface TvdbShow {
   request_status: string | null;
   user_rating: number | null;
   season_states: Record<number, SeasonState>;
-  where_to_watch: { type: string; name: string; logo: string | null }[];
+  where_to_watch: { type: string; name: string; logo: string | null; url?: string | null }[];
   rewatch?: ShowRewatch | null;
 }
 
@@ -1119,7 +1119,7 @@ export interface Show {
   user_rating?: number | null;
   first_air_date: string | null;
   last_air_date: string | null;
-  where_to_watch?: { type: string; name: string; logo: string | null }[];
+  where_to_watch?: { type: string; name: string; logo: string | null; url?: string | null }[];
   rewatch?: ShowRewatch | null;
 }
 
@@ -1741,7 +1741,7 @@ export const api = {
     getPublic: (userId: number, token?: string) =>
       get<PublicProfile>(`/profile/${userId}`, undefined, token),
     publicAccessStatus: () =>
-      get<{ enable_logged_out_navigation: boolean; disable_comments: boolean; has_global_tvdb_key: boolean }>("/profile/public-access-status"),
+      get<{ enable_logged_out_navigation: boolean; disable_comments: boolean; has_global_tmdb_key: boolean; has_global_tvdb_key: boolean }>("/profile/public-access-status"),
     update: (body: Partial<UserPreferences>, token: string) =>
       patch<UserPreferences>("/profile/me", body, token),
     uploadAvatar: (formData: FormData, token: string) =>

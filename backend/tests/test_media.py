@@ -2,6 +2,7 @@ import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from fastapi import HTTPException
 
 os.environ.setdefault("SECRET_KEY", "test-secret")
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/test")
@@ -10,6 +11,20 @@ from models.base import MediaType
 from models.episode_order import ShowEpisodePosition
 from routers import media as media_router
 from routers.media import _attach_episode_order_fields, _resolve_add_overrides, RequestOverrides
+
+
+class AnonymousCatalogAccessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_global_tmdb_key_allows_catalog_access_without_nav_toggle(self):
+        settings = SimpleNamespace(enable_logged_out_navigation=False, tmdb_api_key="global-key")
+        with patch.object(media_router, "_get_global_settings", new=AsyncMock(return_value=settings)):
+            await media_router.require_anon_nav_allowed(AsyncMock())
+
+    async def test_catalog_access_still_requires_global_tmdb_key(self):
+        settings = SimpleNamespace(enable_logged_out_navigation=True, tmdb_api_key=None)
+        with patch.object(media_router, "_get_global_settings", new=AsyncMock(return_value=settings)):
+            with self.assertRaises(HTTPException) as raised:
+                await media_router.require_anon_nav_allowed(AsyncMock())
+        self.assertEqual(raised.exception.status_code, 401)
 
 
 def _pos(sid, canon_season, canon_episode, display_season, display_episode, order_key="tvdb:dvd"):

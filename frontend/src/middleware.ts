@@ -23,16 +23,16 @@ const PUBLIC_LIST_PAGE_RE = /^\/list\/\d+\/?$/;
 // (the endpoint re-checks privacy itself).
 const PUBLIC_TOP_RATED_PAGE_RE = /^\/top-rated-(?:movies|shows)\/\d+\/?$/;
 const PUBLIC_RECENTLY_WATCHED_PAGE_RE = /^\/recently-watched-(?:movies|shows)\/\d+\/?$/;
-// The read-only browse pages, allowed anonymously only when the admin has
-// enabled logged-out navigation (Admin Settings) and a global TMDB key is set.
+// Catalog browsing is always public. Personal collection pages remain behind
+// the login gate even though they share a prefix with public detail pages.
 const PUBLIC_EXPLORE_PAGE_RE = /^\/(?:(?:movies|shows|search|lists|airing-today|discover)?|trending\/(?:movies|shows))\/?$/;
-// Movie/episode and show/season/episode detail pages (TMDB- and TVDB-numbered
-// variants), gated the same way as PUBLIC_EXPLORE_PAGE_RE above.
-const PUBLIC_MEDIA_DETAIL_PAGE_RE =
-  /^\/(?:media\/(?:movie|episode)\/\d+|show\/(?:tvdb\/)?\d+(?:\/season\/\d+(?:\/\d+)?)?|person\/\d+|network\/\d+|studio\/\d+)\/?$/;
+const PUBLIC_CATALOG_PAGE_RE =
+  /^\/(?:(?:movies|shows|search|airing-today|discover)?|trending\/(?:movies|shows)|collection\/\d+|media\/(?:movie|episode)\/\d+|show\/(?:tvdb\/)?\d+(?:\/season\/\d+(?:\/\d+)?)?|person\/\d+|network\/\d+|studio\/\d+)\/?$/;
+// User collections have per-user state and stay behind the login gate.
+const PRIVATE_COLLECTION_PAGE_RE = /^\/collection\/(?:movies|shows)\/?$/;
 // The detail pages' "More like this" row and the person page's credits
-// pagination are loaded client-side from these partials - same admin+
-// global-key gate as the pages above, otherwise an anonymous fetch() here
+// pagination are loaded client-side from these partials - same public access
+// as the catalog pages above, otherwise an anonymous fetch() here
 // gets redirected to /login and its HTML gets injected into the page
 // (fetch() follows redirects, so it looks like a normal 200 response).
 const PUBLIC_RECOMMENDATIONS_PARTIAL_RE = /^\/partials\/recommendations\/?$/;
@@ -40,7 +40,7 @@ const PUBLIC_PERSON_CREDITS_PARTIAL_RE = /^\/partials\/person-credits\/?$/;
 // The Trailer button on the detail pages resolves its YouTube link client-side.
 const PUBLIC_TRAILER_PROXY_RE = /^\/api\/proxy\/media\/(?:movie|series)\/\d+\/trailer\/?$/;
 // The search page's "Try TheTVDB" fallback button fetches this client-side -
-// same admin+global-key gate as PUBLIC_EXPLORE_PAGE_RE ("/search" itself)
+// same public access as PUBLIC_EXPLORE_PAGE_RE ("/search" itself)
 // above, otherwise the fetch() gets redirected to /login (see the matching
 // comment on PUBLIC_MEDIA_ROWS_PROXY_RE below for why that looks like a
 // silent failure instead of an obvious one).
@@ -52,6 +52,7 @@ const PUBLIC_TVDB_SEARCH_PROXY_RE = /^\/api\/proxy\/media\/search-tvdb\/?$/;
 // HTML throws, caught by each row's own error handling).
 const PUBLIC_MEDIA_ROWS_PROXY_RE =
   /^\/api\/proxy\/media\/(trending\/(movies|shows|trailers)|airing-today\/collected|on-air-today|now-playing|upcoming|top-rated-(movies|shows)|on-air-this-week|hidden-gems|streaming)\/?$/;
+const PUBLIC_MEDIA_IMAGE_PROXY_RE = /^\/api\/proxy\/media\/image\/.+/;
 // API docs reveal the full endpoint surface and exact app version - admin-only,
 // never public, regardless of the isStaticAsset check below (which would
 // otherwise treat /openapi.json as a public static file just from its extension).
@@ -86,26 +87,26 @@ export const onRequest = defineMiddleware(async (context, next) => {
     !isAdminOnlyRoute &&
     (hasApiKey || isStaticAsset || PUBLIC_ROUTES.includes(pathname) || PUBLIC_PREFIXES.some(p => pathname.startsWith(p)));
 
-  // Anonymous access to any of these read-only pages is allowed only when the
-  // admin has enabled logged-out navigation (Admin Settings) and a global
-  // TMDB key is set. Profile/list pages still enforce their own privacy
-  // (public/friends/private) server side - this only decides whether a
-  // logged-out visitor gets past the gate at all. Fails closed (redirects to
-  // login) if the check errors.
+  // Public catalog pages do not require an account. Public profile/list pages
+  // still honor the admin toggle here and their own privacy checks server side.
   const isAllowedAnonymousPublicPage = async () => {
+    const isPublicCatalogPage =
+      PUBLIC_CATALOG_PAGE_RE.test(pathname) ||
+      PUBLIC_RECOMMENDATIONS_PARTIAL_RE.test(pathname) ||
+      PUBLIC_PERSON_CREDITS_PARTIAL_RE.test(pathname) ||
+      PUBLIC_TRAILER_PROXY_RE.test(pathname) ||
+      PUBLIC_TVDB_SEARCH_PROXY_RE.test(pathname) ||
+      PUBLIC_MEDIA_ROWS_PROXY_RE.test(pathname) ||
+      PUBLIC_MEDIA_IMAGE_PROXY_RE.test(pathname);
+    if (isPublicCatalogPage && !PRIVATE_COLLECTION_PAGE_RE.test(pathname)) return true;
+
     const isGatedPage =
       PUBLIC_PROFILE_PAGE_RE.test(pathname) ||
       PUBLIC_AVATAR_PROXY_RE.test(pathname) ||
       PUBLIC_LIST_PAGE_RE.test(pathname) ||
       PUBLIC_TOP_RATED_PAGE_RE.test(pathname) ||
       PUBLIC_RECENTLY_WATCHED_PAGE_RE.test(pathname) ||
-      PUBLIC_EXPLORE_PAGE_RE.test(pathname) ||
-      PUBLIC_MEDIA_DETAIL_PAGE_RE.test(pathname) ||
-      PUBLIC_RECOMMENDATIONS_PARTIAL_RE.test(pathname) ||
-      PUBLIC_PERSON_CREDITS_PARTIAL_RE.test(pathname) ||
-      PUBLIC_TRAILER_PROXY_RE.test(pathname) ||
-      PUBLIC_TVDB_SEARCH_PROXY_RE.test(pathname) ||
-      PUBLIC_MEDIA_ROWS_PROXY_RE.test(pathname);
+      (PUBLIC_EXPLORE_PAGE_RE.test(pathname) && !PRIVATE_COLLECTION_PAGE_RE.test(pathname));
     if (!isGatedPage) return false;
     try {
       const status = await api.profile.publicAccessStatus();

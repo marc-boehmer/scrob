@@ -331,7 +331,7 @@ async def delete_user(
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
 
-    await db.execute(delete(User).where(User.id == user_id))
+    await db.delete(target)
     await db.commit()
     return {"status": "deleted"}
 

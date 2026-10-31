@@ -13,7 +13,7 @@ interface Props {
   isWatchlistItem?: boolean;
 }
 
-const { item, showWatchlistAction = false, isWatchlistItem = false } = Astro.props;
+const { item, showWatchlistAction = true, isWatchlistItem = false } = Astro.props;
 const { user } = Astro.locals;
 
 const isPerson = item.type === "person";
@@ -135,7 +135,7 @@ const isInWatchlist = isWatchlistItem || (item.in_watchlist ?? false);
           collectionPct={collectionPct}
           watchPct={watchPct}
           isSeries={isPercentageStyle}
-          showWatchlist={showWatchlistAction && (item.type === "movie" || (item.type === "series" && item.season_number == null))}
+          showWatchlist={showWatchlistAction && !!item.tmdb_id && (item.type === "movie" || (item.type === "series" && item.season_number == null))}
           inWatchlist={isInWatchlist}
       />
   )}

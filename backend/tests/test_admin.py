@@ -8,7 +8,7 @@ os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/
 
 import httpx
 from fastapi import FastAPI, HTTPException, Response
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -156,19 +156,28 @@ class AdminCreateUserTests(unittest.IsolatedAsyncioTestCase):
     registration gate and marking the email confirmed."""
 
     async def asyncSetUp(self):
-        from models.users import User
+        import models  # noqa: F401 - register every mapped table for ORM delete cascades
+        from models.base import Base
+        from models.users import TotpBackupCode, User, UserSettings
         from models.email_activation import EmailActivation
         from models.password_reset import PasswordResetToken
 
         self.engine = create_async_engine(
             "sqlite+aiosqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool,
         )
+        event.listen(
+            self.engine.sync_engine,
+            "connect",
+            lambda connection, _: connection.execute("PRAGMA foreign_keys=ON"),
+        )
         async with self.engine.begin() as conn:
-            await conn.run_sync(User.__table__.create)
-            await conn.run_sync(EmailActivation.__table__.create)
-            await conn.run_sync(PasswordResetToken.__table__.create)
+            await conn.run_sync(Base.metadata.create_all)
         self.Session = async_sessionmaker(self.engine, expire_on_commit=False)
         self.User = User
+        self.UserSettings = UserSettings
+        self.TotpBackupCode = TotpBackupCode
+        self.EmailActivation = EmailActivation
+        self.PasswordResetToken = PasswordResetToken
 
         app = FastAPI()
         app.include_router(admin.router, prefix="/admin")
@@ -281,6 +290,33 @@ class AdminCreateUserTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("already in use", response.json()["detail"])
+
+    async def test_admin_delete_cascades_user_data(self):
+        async with self.Session() as db:
+            user = self.User(id=2, email="bob@example.com", username="bob", api_key="bob-key")
+            db.add(user)
+            await db.flush()
+            db.add_all([
+                self.UserSettings(user_id=user.id),
+                self.TotpBackupCode(user_id=user.id, code="backup-code"),
+                self.EmailActivation(user_id=user.id, email=user.email, token="activation-token"),
+                self.PasswordResetToken(user_id=user.id, token="reset-token"),
+            ])
+            await db.commit()
+
+        response = await self.client.delete("/admin/users/2")
+        self.assertEqual(response.status_code, 200, response.text)
+
+        async with self.Session() as db:
+            self.assertIsNone(await db.get(self.User, 2))
+            for model in (
+                self.UserSettings,
+                self.TotpBackupCode,
+                self.EmailActivation,
+                self.PasswordResetToken,
+            ):
+                result = await db.execute(select(model))
+                self.assertEqual(result.scalars().all(), [])
 
 
 if __name__ == "__main__":

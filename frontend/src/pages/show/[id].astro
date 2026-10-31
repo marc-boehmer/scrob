@@ -71,9 +71,15 @@ const originalLanguage = show?.original_language
 const posterPath = show
   ? ratingPosterUrl(show.poster_path, { type: "series", tmdb_id: show.tmdb_id, tvdb_id: show.tvdb_id, imdb_id: show.imdb_id }, Astro.locals.hasRpdbKey)
   : null;
+const shareDescription = show?.overview?.trim() || show?.tagline || (show ? `Discover ${show.title} on Scrob.` : undefined);
 ---
 
-<Base title={show?.title || "Show Details"}>
+<Base
+  title={show?.title || "Show Details"}
+  description={shareDescription}
+  image={show?.backdrop_path ?? show?.poster_path}
+  ogType="video.tv_show"
+>
   {error && !show && (
     <div class="max-w-md mx-auto mt-20 text-center">
         <div class="bg-red-500/10 border border-red-500/20 text-red-500 p-6 rounded-2xl mb-6">
@@ -295,7 +301,12 @@ const posterPath = show
                 <h2 class="text-sm font-black text-zinc-500 mb-3 uppercase tracking-widest">Where to Watch</h2>
                 <div class="flex flex-wrap gap-2">
                   {show.where_to_watch.map(s => (
-                    <div class="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg">
+                    <a
+                      href={s.url ?? undefined}
+                      target={s.url ? "_blank" : undefined}
+                      rel={s.url ? "noopener noreferrer" : undefined}
+                      class={`flex items-center gap-2 px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg ${s.url ? "hover:border-zinc-600 transition-colors" : ""}`}
+                    >
                       {s.logo ? (
                         <img src={s.logo} alt={s.name} class="w-5 h-5 rounded object-cover" />
                       ) : (s.type === "plex" || s.type === "jellyfin" || s.type === "emby") ? (
@@ -304,7 +315,7 @@ const posterPath = show
                         <span class="text-zinc-400 text-xs">▶</span>
                       )}
                       <span class="text-zinc-300 text-xs font-semibold">{s.name}</span>
-                    </div>
+                    </a>
                   ))}
                 </div>
               </div>

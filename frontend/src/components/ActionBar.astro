@@ -95,8 +95,8 @@ const _rateSxe = mediaType === "episode" && _rateSeason != null && episodeNumber
 const ratingSubtitleFull = [_rateSxe, ratingSubtitle].filter(Boolean).join(" · ");
 
 // Shared button classes
-const btn = "flex flex-col items-center justify-center gap-0.5 md:gap-1.5 px-2 py-3 md:py-3.5 transition-all cursor-pointer";
-const btnW = "w-[52px] min-w-[52px] md:w-[85px] md:min-w-[85px]";
+const btn = "flex flex-col items-center justify-center gap-0.5 md:gap-1.5 px-1 md:px-2 py-3 md:py-3.5 transition-all cursor-pointer";
+const btnW = "flex-1 min-w-0 md:flex-none md:w-[85px] md:min-w-[85px]";
 const label = "hidden md:block text-[10px] font-bold uppercase tracking-wider leading-none";
 
 // Consistent state classes per button colour — inactive / active
@@ -175,9 +175,9 @@ const dropTitle = dropped
   data-title={ratingTitle ?? ""}
   data-poster-path={posterPath ?? ""}
   data-air-date={releaseDate ?? ""}
-  class="flex w-fit"
+  class="flex w-full md:w-fit"
 >
-  <div class="flex flex-row rounded-2xl overflow-hidden border border-zinc-800 shadow-lg min-h-[52px] md:min-h-[64px] w-fit">
+  <div class="flex flex-row rounded-2xl overflow-hidden border border-zinc-800 shadow-lg min-h-[52px] md:min-h-[64px] w-full md:w-fit">
 
     <!-- Watched (green) -->
     {!listOnly && (
