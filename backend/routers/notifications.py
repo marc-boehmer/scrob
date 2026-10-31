@@ -13,6 +13,7 @@ from dependencies import get_current_user
 from models.friendship import Friendship
 from models.media import Media
 from models.notification import Notification
+from models.release_announcement import ReleaseAnnouncement
 from models.users import User
 from routers.friends import _people
 
@@ -20,6 +21,7 @@ router = APIRouter()
 
 LIST_LIMIT = 30
 WATCHLIST_TYPES = {WATCHLIST_RELEASE, WATCHLIST_STREAMING}
+RELEASE_ANNOUNCEMENT = "release_announcement"
 
 
 class MediaShareRequest(BaseModel):
@@ -114,12 +116,23 @@ async def list_notifications(current_user: User = Depends(get_current_user), db:
     if media_ids:
         media = {m.id: m for m in (await db.execute(select(Media).options(selectinload(Media.show)).where(Media.id.in_(media_ids)))).scalars().all()}
 
+    announcement_ids = [n.release_announcement_id for n in rows if n.release_announcement_id]
+    announcements = {}
+    if announcement_ids:
+        announcements = {
+            announcement.id: announcement
+            for announcement in (await db.execute(
+                select(ReleaseAnnouncement).where(ReleaseAnnouncement.id.in_(announcement_ids))
+            )).scalars().all()
+        }
+
     items = []
     for n in rows:
         actor = people.get(n.actor_id) if n.actor_id else None
-        if not actor and n.type not in WATCHLIST_TYPES:
+        if not actor and n.type not in WATCHLIST_TYPES and n.type != RELEASE_ANNOUNCEMENT:
             continue
         m = media.get(n.media_id) if n.media_id else None
+        announcement = announcements.get(n.release_announcement_id)
         items.append({
             "id": n.id,
             "type": n.type,
@@ -129,6 +142,11 @@ async def list_notifications(current_user: User = Depends(get_current_user), db:
             "rating": n.rating,
             "comment": n.shared_comment,
             "media": _notification_media(n, m),
+            "announcement": {
+                "version": announcement.version,
+                "title": announcement.title,
+                "body": announcement.body,
+            } if announcement else None,
         })
     return {"notifications": items, "unread_count": await _unread_count(db, current_user.id)}
 

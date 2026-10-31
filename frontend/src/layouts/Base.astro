@@ -13,7 +13,6 @@ interface Props {
 }
 const { title, description, image, ogType = "website", hideNav } = Astro.props;
 const { user, token } = Astro.locals;
-const currentVersion = process.env.APP_VERSION ?? "dev";
 const pageDescription = (description?.trim() || "Discover and track movies and TV shows with Scrob.").slice(0, 200);
 const pageUrl = new URL(Astro.url.pathname, Astro.url.origin).href;
 const pageImage = image ? new URL(image, Astro.url).href : null;
@@ -385,18 +384,22 @@ const bottomNavItem = (active: boolean) =>
     </nav>
   )}
 
-  {!hideNav && (
-    <aside id="release-notification" role="status" aria-live="polite" class="hidden mx-auto max-w-screen-xl px-4 md:px-6 pt-3">
-      <div class="flex items-center justify-between gap-3 rounded-xl border border-blue-800 bg-blue-950/70 px-4 py-3 text-blue-100">
-        <p class="text-sm">
-          <strong>Scrob <span id="release-notification-version"></span> is here.</strong>
-          <a id="release-notification-link" href="#" target="_blank" rel="noopener noreferrer" class="ml-1 underline underline-offset-2 hover:text-white">See what changed</a>
-        </p>
-        <button id="release-notification-dismiss" type="button" aria-label="Dismiss release notification" class="shrink-0 rounded p-1 text-blue-300 hover:bg-blue-900 hover:text-white">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m18 6-12 12"/><path d="m6 6 12 12"/></svg>
-        </button>
-      </div>
-    </aside>
+  {user && (
+    <div id="release-announcement-modal" class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" role="dialog" aria-modal="true" aria-labelledby="release-announcement-title">
+      <button id="release-announcement-backdrop" type="button" class="absolute inset-0 cursor-default" aria-label="Close announcement"></button>
+      <section class="relative w-full max-w-lg max-h-[85dvh] overflow-y-auto rounded-2xl border border-zinc-700 bg-zinc-900 shadow-2xl">
+        <header class="flex items-start justify-between gap-4 border-b border-zinc-800 px-5 py-4">
+          <div>
+            <p id="release-announcement-version" class="text-xs font-bold uppercase tracking-wider text-blue-400"></p>
+            <h2 id="release-announcement-title" class="mt-1 text-lg font-bold text-zinc-100"></h2>
+          </div>
+          <button id="release-announcement-close" type="button" class="shrink-0 rounded-lg p-2 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100" aria-label="Close announcement">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m18 6-12 12"/><path d="m6 6 12 12"/></svg>
+          </button>
+        </header>
+        <p id="release-announcement-body" class="whitespace-pre-wrap break-words px-5 py-5 text-sm leading-relaxed text-zinc-300"></p>
+      </section>
+    </div>
   )}
 
   {pathname === "/" && <div id="now-playing-section"></div>}
@@ -882,16 +885,18 @@ const bottomNavItem = (active: boolean) =>
       const notifEmpty = document.getElementById('notif-empty');
       const notifReadAll = document.getElementById('notif-read-all');
       const notifClear = document.getElementById('notif-clear');
+      const announcementModal = document.getElementById('release-announcement-modal');
 
       type NotifItem = {
         id: number;
-        type: 'friend_request' | 'friend_rating' | 'friend_media_share' | 'watchlist_release' | 'watchlist_streaming';
+        type: 'friend_request' | 'friend_rating' | 'friend_media_share' | 'watchlist_release' | 'watchlist_streaming' | 'release_announcement';
         is_read: boolean;
         created_at: string;
         actor: { id: number; display_name: string } | null;
         rating: number | null;
         comment?: string | null;
         media: { title: string; type: string; season_number: number | null; episode_number: number | null; link: string | null } | null;
+        announcement?: { version: string; title: string; body: string } | null;
       };
 
       const authHeaders = () => ({ 'Authorization': `Bearer ${(window as any).__AUTH_TOKEN__ ?? ''}` });
@@ -914,6 +919,12 @@ const bottomNavItem = (active: boolean) =>
 
       const describe = (n: NotifItem) => {
         if (n.type === 'friend_request') return { text: ' sent you a friend request', href: '/friends' };
+        if (n.type === 'release_announcement') {
+          return {
+            text: ` announced version ${n.announcement?.version ?? ''}: ${n.announcement?.title ?? 'New release'}`,
+            href: '#',
+          };
+        }
         const m = n.media;
         if (n.type === 'watchlist_release' || n.type === 'watchlist_streaming') {
           return { text: `: ${n.comment ?? ''}`, href: m?.link ?? '/watchlist' };
@@ -940,8 +951,25 @@ const bottomNavItem = (active: boolean) =>
           const a = document.createElement('a');
           a.href = href;
           a.className = 'flex items-start gap-3 px-4 py-3 hover:bg-zinc-800 transition-colors';
-          a.addEventListener('click', () => {
-            if (!n.is_read) fetch(`/api/proxy/notifications/${n.id}/read`, { method: 'POST', headers: authHeaders(), keepalive: true }).catch(() => {});
+          a.addEventListener('click', (event) => {
+            if (n.type === 'release_announcement' && n.announcement) {
+              event.preventDefault();
+              document.getElementById('notif-panel')?.classList.add('hidden');
+              const version = document.getElementById('release-announcement-version');
+              const title = document.getElementById('release-announcement-title');
+              const body = document.getElementById('release-announcement-body');
+              if (version && title && body && announcementModal) {
+                version.textContent = `Version ${n.announcement.version}`;
+                title.textContent = n.announcement.title;
+                body.textContent = n.announcement.body;
+                announcementModal.classList.remove('hidden');
+              }
+            }
+            if (!n.is_read) {
+              fetch(`/api/proxy/notifications/${n.id}/read`, { method: 'POST', headers: authHeaders(), keepalive: true })
+                .then(() => refreshUnread())
+                .catch(() => {});
+            }
           });
 
           const dot = document.createElement('span');
@@ -952,7 +980,7 @@ const bottomNavItem = (active: boolean) =>
           msg.className = 'block text-zinc-300';
           const who = document.createElement('span');
           who.className = 'font-bold text-zinc-100';
-          who.textContent = n.actor?.display_name ?? n.media?.title ?? 'Watchlist';
+          who.textContent = n.actor?.display_name ?? (n.type === 'release_announcement' ? 'Scrob' : n.media?.title ?? 'Watchlist');
           msg.append(who, text);
           const when = document.createElement('span');
           when.className = 'block text-xs text-zinc-500 mt-0.5';
@@ -1027,6 +1055,13 @@ const bottomNavItem = (active: boolean) =>
       notifPanel?.addEventListener('click', (e) => e.stopPropagation());
       document.addEventListener('click', () => notifPanel?.classList.add('hidden'));
       document.getElementById('user-menu-btn')?.addEventListener('click', () => notifPanel?.classList.add('hidden'));
+
+      const closeAnnouncement = () => announcementModal?.classList.add('hidden');
+      document.getElementById('release-announcement-close')?.addEventListener('click', closeAnnouncement);
+      document.getElementById('release-announcement-backdrop')?.addEventListener('click', closeAnnouncement);
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') closeAnnouncement();
+      });
 
       notifReadAll?.addEventListener('click', async () => {
         try {
@@ -3107,90 +3142,6 @@ const bottomNavItem = (active: boolean) =>
       navigator.vibrate?.(10);
     }, { passive: true });
   </script>
-  <script define:vars={{ currentVersion }}>
-    // ── Release notification ──────────────────────────────────────────────────
-    const releaseNotification = document.getElementById('release-notification');
-    const releaseVersion = document.getElementById('release-notification-version');
-    const releaseLink = document.getElementById('release-notification-link') as HTMLAnchorElement | null;
-    const releaseDismiss = document.getElementById('release-notification-dismiss');
-    const releaseCacheKey = 'scrob-latest-release-cache';
-    const releaseDismissKey = 'scrob-dismissed-release';
-    const releaseCacheTtl = 12 * 60 * 60 * 1000;
-
-    function readReleaseStorage(key: string) {
-      try {
-        return localStorage.getItem(key);
-      } catch {
-        return null;
-      }
-    }
-
-    function writeReleaseStorage(key: string, value: string) {
-      try {
-        localStorage.setItem(key, value);
-      } catch (error) {
-        console.warn('Unable to save release notification state.', error);
-      }
-    }
-
-    function isNewerRelease(latest: string, current: string) {
-      const parse = (version: string) => {
-        const normalized = version.replace(/^v/, '');
-        return /^\d+\.\d+\.\d+$/.test(normalized) ? normalized.split('.').map(Number) : null;
-      };
-      const latestParts = parse(latest);
-      const currentParts = parse(current);
-      if (!latestParts || !currentParts) return false;
-      for (let i = 0; i < latestParts.length; i++) {
-        if (latestParts[i] !== currentParts[i]) return latestParts[i] > currentParts[i];
-      }
-      return false;
-    }
-
-    function readReleaseCache(): { version: string; checkedAt: number } | null {
-      try {
-        const cache = JSON.parse(readReleaseStorage(releaseCacheKey) || 'null');
-        return typeof cache?.version === 'string' && typeof cache?.checkedAt === 'number' ? cache : null;
-      } catch {
-        return null;
-      }
-    }
-
-    async function checkForRelease() {
-      if (!releaseNotification || !releaseVersion || !releaseLink || !releaseDismiss || !/^\d+\.\d+\.\d+$/.test(currentVersion.replace(/^v/, ''))) return;
-
-      try {
-        const cached = readReleaseCache();
-        let latest = cached && Date.now() - cached.checkedAt < releaseCacheTtl ? cached.version : null;
-        if (!latest) {
-          const response = await fetch('https://api.github.com/repos/ellite/scrob/releases/latest', {
-            headers: { Accept: 'application/vnd.github+json' },
-          });
-          if (!response.ok) throw new Error(`GitHub release check returned ${response.status}`);
-          const release = await response.json();
-          latest = typeof release.tag_name === 'string' && /^\d+\.\d+\.\d+$/.test(release.tag_name.replace(/^v/, ''))
-            ? release.tag_name.replace(/^v/, '')
-            : null;
-          if (!latest) return;
-          writeReleaseStorage(releaseCacheKey, JSON.stringify({ version: latest, checkedAt: Date.now() }));
-        }
-
-        if (!isNewerRelease(latest, currentVersion) || readReleaseStorage(releaseDismissKey) === latest) return;
-        releaseVersion.textContent = latest;
-        releaseLink.href = `https://github.com/ellite/scrob/releases/tag/${encodeURIComponent(latest)}`;
-        releaseNotification.classList.remove('hidden');
-        releaseDismiss.addEventListener('click', () => {
-          writeReleaseStorage(releaseDismissKey, latest!);
-          releaseNotification.classList.add('hidden');
-        }, { once: true });
-      } catch (error) {
-        console.warn('Unable to check for a new Scrob release.', error);
-      }
-    }
-
-    void checkForRelease();
-  </script>
-
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
