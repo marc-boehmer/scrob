@@ -78,8 +78,33 @@ async def email_friend_request(db: AsyncSession, requester_id: int, addressee_id
         logger.exception("Failed to send friend request email")
 
 
+async def sender_media_rating(
+    db: AsyncSession, user_id: int, media_type: str, tmdb_id: int | None, tvdb_id: int | None
+) -> float | None:
+    """The user's own title-level rating (not a season/episode one) for a movie or show, if any."""
+    from models.media import Media, MediaType
+    from models.ratings import Rating
+
+    id_column, id_value = (Media.tmdb_id, tmdb_id) if tmdb_id is not None else (Media.tvdb_id, tvdb_id)
+    return (await db.execute(
+        select(Rating.rating)
+        .join(Media, Media.id == Rating.media_id)
+        .where(
+            Rating.user_id == user_id,
+            Rating.rating.is_not(None),
+            Rating.season_number.is_(None),
+            Rating.episode_order.is_(None),
+            Media.media_type == (MediaType.movie if media_type == "movie" else MediaType.series),
+            id_column == id_value,
+        )
+        .order_by(Rating.rated_at.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+
+
 async def email_friend_media_share(
-    db: AsyncSession, sender_id: int, recipient_id: int, title: str, link: str
+    db: AsyncSession, sender_id: int, recipient_id: int, title: str, link: str, rating: float | None = None,
+    comment: str | None = None,
 ) -> None:
     """Immediately email a friend about a shared title when they have enabled it. Never raises."""
     from core.email import email_enabled, send_friend_media_share_email
@@ -100,7 +125,7 @@ async def email_friend_media_share(
         if enabled is False:
             logger.info("Media-share email skipped: user %s disabled it", recipient_id)
             return
-        await send_friend_media_share_email(recipient.email, sender.display_name, title, link)
+        await send_friend_media_share_email(recipient.email, sender.display_name, title, link, rating, comment)
     except Exception:
         logger.exception("Failed to send media-share email to user %s", recipient_id)
 

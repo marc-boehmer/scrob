@@ -6,7 +6,7 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from core.notifications import FRIEND_MEDIA_SHARE, email_friend_media_share
+from core.notifications import FRIEND_MEDIA_SHARE, email_friend_media_share, sender_media_rating
 from db import get_db
 from dependencies import get_current_user
 from models.friendship import Friendship
@@ -26,6 +26,7 @@ class MediaShareRequest(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     tmdb_id: int | None = Field(default=None, gt=0)
     tvdb_id: int | None = Field(default=None, gt=0)
+    comment: str | None = Field(default=None, max_length=500)
 
     @field_validator("recipient_ids")
     @classmethod
@@ -41,6 +42,11 @@ class MediaShareRequest(BaseModel):
         if not title:
             raise ValueError("Title cannot be blank.")
         return title
+
+    @field_validator("comment")
+    @classmethod
+    def blank_comment_is_none(cls, comment: str | None) -> str | None:
+        return (comment or "").strip() or None
 
     @model_validator(mode="after")
     def valid_media_identity(self):
@@ -119,6 +125,7 @@ async def list_notifications(current_user: User = Depends(get_current_user), db:
             "created_at": n.created_at.isoformat(),
             "actor": actor,
             "rating": n.rating,
+            "comment": n.shared_comment,
             "media": _notification_media(n, m),
         })
     return {"notifications": items, "unread_count": await _unread_count(db, current_user.id)}
@@ -162,6 +169,7 @@ async def share_media(
     else:
         link = f"/show/tvdb/{body.tvdb_id}"
 
+    rating = await sender_media_rating(db, current_user.id, body.media_type, body.tmdb_id, body.tvdb_id)
     for recipient_id in body.recipient_ids:
         db.add(Notification(
             user_id=recipient_id,
@@ -169,11 +177,26 @@ async def share_media(
             type=FRIEND_MEDIA_SHARE,
             shared_media_title=body.title,
             shared_media_link=link,
+            shared_comment=body.comment,
+            rating=rating,
         ))
     await db.commit()
     for recipient_id in body.recipient_ids:
-        await email_friend_media_share(db, current_user.id, recipient_id, body.title, link)
+        await email_friend_media_share(db, current_user.id, recipient_id, body.title, link, rating, body.comment)
     return {"sent": len(body.recipient_ids)}
+
+
+@router.get("/share-rating")
+async def share_rating(
+    media_type: Literal["movie", "series"],
+    tmdb_id: int | None = None,
+    tvdb_id: int | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if tmdb_id is None and tvdb_id is None:
+        raise HTTPException(status_code=400, detail="A TMDB or TVDB ID is required.")
+    return {"rating": await sender_media_rating(db, current_user.id, media_type, tmdb_id, tvdb_id)}
 
 
 @router.get("/unread-count")

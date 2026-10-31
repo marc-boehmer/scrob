@@ -875,6 +875,7 @@ const bottomNavItem = (active: boolean) =>
         created_at: string;
         actor: { id: number; display_name: string };
         rating: number | null;
+        comment?: string | null;
         media: { title: string; type: string; season_number: number | null; episode_number: number | null; link: string | null } | null;
       };
 
@@ -900,7 +901,7 @@ const bottomNavItem = (active: boolean) =>
         if (n.type === 'friend_request') return { text: ' sent you a friend request', href: '/friends' };
         const m = n.media;
         if (n.type === 'friend_media_share') {
-          return { text: ` shared ${m?.title ?? 'a title'} with you`, href: m?.link ?? `/profile/${n.actor.id}` };
+          return { text: ` shared ${m?.title ?? 'a title'} with you${n.rating != null ? ` (${n.rating}/10)` : ''}`, href: m?.link ?? `/profile/${n.actor.id}` };
         }
         const rated = n.rating != null ? ` (${n.rating}/10)` : '';
         let what = m?.title ?? 'a title';
@@ -937,7 +938,14 @@ const bottomNavItem = (active: boolean) =>
           const when = document.createElement('span');
           when.className = 'block text-xs text-zinc-500 mt-0.5';
           when.textContent = timeAgo(n.created_at);
-          body.append(msg, when);
+          body.append(msg);
+          if (n.type === 'friend_media_share' && n.comment) {
+            const note = document.createElement('span');
+            note.className = 'block text-xs text-zinc-400 italic mt-1 whitespace-pre-wrap break-words';
+            note.textContent = `“${n.comment}”`;
+            body.append(note);
+          }
+          body.append(when);
           a.append(dot, body);
           if (n.type === 'friend_request') {
             li.className = 'flex items-center pr-3';

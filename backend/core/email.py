@@ -174,14 +174,23 @@ async def send_friend_request_email(to: str, requester_name: str) -> None:
     await send_email(to, f"{requester_name} sent you a friend request on Scrob", html)
 
 
-async def send_friend_media_share_email(to: str, sender_name: str, title: str, link: str) -> None:
+async def send_friend_media_share_email(
+    to: str, sender_name: str, title: str, link: str, rating: float | None = None,
+    comment: str | None = None,
+) -> None:
     name = html_lib.escape(sender_name)
     escaped_title = html_lib.escape(title)
     url = html_lib.escape(f"{settings.server_url.rstrip('/')}{link}", quote=True)
+    rating_html = f"<p>{name} rated it <strong style=\"color: #f4f4f5;\">{rating:g}</strong>.</p>" if rating is not None else ""
+    if comment:
+        rating_html += (
+            "<blockquote style=\"margin: 16px 0; padding-left: 12px; border-left: 3px solid #52525b; "
+            f"color: #d4d4d8; white-space: pre-wrap;\">{html_lib.escape(comment)}</blockquote>"
+        )
     html = _card(
         "A friend shared a title with you",
         f"<p><strong style=\"color: #f4f4f5;\">{name}</strong> thought you might like "
-        f"<strong style=\"color: #f4f4f5;\">{escaped_title}</strong>.</p>",
+        f"<strong style=\"color: #f4f4f5;\">{escaped_title}</strong>.</p>{rating_html}",
         "View title",
         button_url=url,
     )

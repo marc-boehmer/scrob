@@ -32,6 +32,7 @@ const { title, mediaType, tmdbId, tvdbId, href, authenticated } = Astro.props;
   data-share-tmdb-id={tmdbId ?? ""}
   data-share-tvdb-id={tvdbId ?? ""}
   data-share-href={href}
+  data-share-authenticated={authenticated ? "true" : "false"}
   class="hidden fixed inset-0 z-[70] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
   role="dialog"
   aria-modal="true"
@@ -49,6 +50,7 @@ const { title, mediaType, tmdbId, tvdbId, href, authenticated } = Astro.props;
     </div>
 
     <div class="p-5 space-y-5">
+      <textarea data-share-comment maxlength="500" rows="2" placeholder="Why should they watch it? (optional)" aria-label="Comment" class="w-full px-3 py-2 text-sm text-zinc-200 bg-zinc-800 border border-zinc-700 rounded-xl resize-none placeholder:text-zinc-500 focus:outline-none focus:border-zinc-500"></textarea>
       <div class="grid grid-cols-2 gap-2">
         <button type="button" data-share-native class="hidden px-3 py-2.5 text-sm font-semibold text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-xl cursor-pointer">Share…</button>
         <button type="button" data-share-copy class="px-3 py-2.5 text-sm font-semibold text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-xl cursor-pointer">Copy link</button>
@@ -84,6 +86,7 @@ const { title, mediaType, tmdbId, tvdbId, href, authenticated } = Astro.props;
     const openButton = modal.parentElement?.querySelector<HTMLButtonElement>("[data-share-open]");
     const closeButton = modal.querySelector<HTMLButtonElement>("[data-share-close]");
     const friendsContainer = modal.querySelector<HTMLElement>("[data-share-friends]");
+    const commentInput = modal.querySelector<HTMLTextAreaElement>("[data-share-comment]");
     const sendButton = modal.querySelector<HTMLButtonElement>("[data-share-send]");
     const status = modal.querySelector<HTMLElement>("[data-share-status]");
     const title = modal.dataset.shareTitle ?? "";
@@ -98,6 +101,19 @@ const { title, mediaType, tmdbId, tvdbId, href, authenticated } = Astro.props;
       status.classList.remove("hidden", "text-red-400", "text-green-400");
       status.classList.add(isError ? "text-red-400" : "text-green-400");
     };
+
+    let ownRating: number | null = null;
+    let ratingLoaded = false;
+
+    const updateEmailLink = () => {
+      const email = modal.querySelector<HTMLAnchorElement>("[data-share-email]");
+      if (!email) return;
+      const comment = commentInput?.value.trim();
+      const rating = ownRating != null ? ` (I rated it ${ownRating}/10)` : "";
+      const body = `I thought you'd like ${title}${rating}:\n${shareUrl}${comment ? `\n\n${comment}` : ""}`;
+      email.href = `mailto:?subject=${encodeURIComponent(`I thought you'd like ${title}`)}&body=${encodeURIComponent(body)}`;
+    };
+    commentInput?.addEventListener("input", updateEmailLink);
 
     const close = () => {
       modal.classList.add("hidden");
@@ -167,14 +183,34 @@ const { title, mediaType, tmdbId, tvdbId, href, authenticated } = Astro.props;
       }
     };
 
+    const loadOwnRating = async () => {
+      if (ratingLoaded || modal.dataset.shareAuthenticated !== "true") return;
+      ratingLoaded = true;
+      try {
+        const params = new URLSearchParams({ media_type: modal.dataset.shareType ?? "" });
+        if (modal.dataset.shareTmdbId) params.set("tmdb_id", modal.dataset.shareTmdbId);
+        if (modal.dataset.shareTvdbId) params.set("tvdb_id", modal.dataset.shareTvdbId);
+        const token = (window as ShareWindow).__AUTH_TOKEN__ ?? "";
+        const response = await fetch(`/api/proxy/notifications/share-rating?${params}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!response.ok) throw new Error();
+        ownRating = ((await response.json()) as { rating: number | null }).rating;
+        updateEmailLink();
+      } catch {
+        ratingLoaded = false;
+      }
+    };
+
     openButton?.addEventListener("click", () => {
       modal.classList.remove("hidden");
       const email = modal.querySelector<HTMLAnchorElement>("[data-share-email]");
       if (email) {
-        email.href = `mailto:?subject=${encodeURIComponent(`I thought you'd like ${title}`)}&body=${encodeURIComponent(`I thought you'd like ${title}:\n${shareUrl}`)}`;
+        updateEmailLink();
       }
       if (navigator.share) modal.querySelector("[data-share-native]")?.classList.remove("hidden");
       void loadFriends();
+      void loadOwnRating();
       closeButton?.focus();
     });
     closeButton?.addEventListener("click", close);
@@ -195,7 +231,8 @@ const { title, mediaType, tmdbId, tvdbId, href, authenticated } = Astro.props;
     });
     modal.querySelector("[data-share-native]")?.addEventListener("click", async () => {
       try {
-        await navigator.share({ title, text: `I thought you'd like ${title}`, url: shareUrl });
+        const comment = commentInput?.value.trim();
+        await navigator.share({ title, text: `I thought you'd like ${title}${ownRating != null ? ` (I rated it ${ownRating}/10)` : ""}${comment ? `\n\n${comment}` : ""}`, url: shareUrl });
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
         setStatus("Could not open the share sheet.", true);
@@ -215,6 +252,7 @@ const { title, mediaType, tmdbId, tvdbId, href, authenticated } = Astro.props;
             recipient_ids: [...selected],
             media_type: modal.dataset.shareType,
             title,
+            comment: commentInput?.value.trim() || null,
             tmdb_id: modal.dataset.shareTmdbId ? Number(modal.dataset.shareTmdbId) : null,
             tvdb_id: modal.dataset.shareTvdbId ? Number(modal.dataset.shareTvdbId) : null,
           }),
@@ -226,6 +264,8 @@ const { title, mediaType, tmdbId, tvdbId, href, authenticated } = Astro.props;
         const result = await response.json() as { sent: number };
         setStatus(`Shared with ${result.sent} friend${result.sent === 1 ? "" : "s"}.`);
         selected.clear();
+        if (commentInput) commentInput.value = "";
+        updateEmailLink();
         friendsContainer?.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((checkbox) => { checkbox.checked = false; });
       } catch (error) {
         setStatus(error instanceof Error ? error.message : "Could not share this title.", true);

@@ -94,7 +94,8 @@ class MediaShareNotificationTests(unittest.IsolatedAsyncioTestCase):
             recipient_ids=[2, 3], media_type="movie", tmdb_id=550, title=" Fight Club ",
         )
 
-        with patch("routers.notifications.email_friend_media_share", AsyncMock()) as send_email:
+        with patch("routers.notifications.email_friend_media_share", AsyncMock()) as send_email, \
+             patch("routers.notifications.sender_media_rating", AsyncMock(return_value=8.5)):
             response = await share_media(body, SimpleNamespace(id=1), db)
 
         self.assertEqual(response, {"sent": 2})
@@ -105,14 +106,16 @@ class MediaShareNotificationTests(unittest.IsolatedAsyncioTestCase):
             and n.type == "friend_media_share"
             and n.shared_media_title == "Fight Club"
             and n.shared_media_link == "/movie/550"
+            and n.shared_comment is None
+            and n.rating == 8.5
             for n in notifications
         ))
         db.commit.assert_awaited_once()
         self.assertEqual(
             send_email.await_args_list,
             [
-                call(db, 1, 2, "Fight Club", "/movie/550"),
-                call(db, 1, 3, "Fight Club", "/movie/550"),
+                call(db, 1, 2, "Fight Club", "/movie/550", 8.5, None),
+                call(db, 1, 3, "Fight Club", "/movie/550", 8.5, None),
             ],
         )
 
@@ -134,13 +137,14 @@ class MediaShareNotificationTests(unittest.IsolatedAsyncioTestCase):
         db = SimpleNamespace(execute=AsyncMock(return_value=result), add=Mock(), commit=AsyncMock())
         body = MediaShareRequest(recipient_ids=[2], media_type="series", tvdb_id=81189, title="Example Show")
 
-        with patch("routers.notifications.email_friend_media_share", AsyncMock()) as send_email:
+        with patch("routers.notifications.email_friend_media_share", AsyncMock()) as send_email, \
+             patch("routers.notifications.sender_media_rating", AsyncMock(return_value=8.5)):
             response = await share_media(body, SimpleNamespace(id=1), db)
 
         self.assertEqual(response, {"sent": 1})
         notification = db.add.call_args.args[0]
         self.assertEqual(notification.shared_media_link, "/show/tvdb/81189")
-        send_email.assert_awaited_once_with(db, 1, 2, "Example Show", "/show/tvdb/81189")
+        send_email.assert_awaited_once_with(db, 1, 2, "Example Show", "/show/tvdb/81189", 8.5, None)
 
     async def test_show_notification_contains_share_link(self):
         notification = Notification(
@@ -160,6 +164,14 @@ class MediaShareNotificationTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    async def test_share_rating_endpoint_returns_own_rating(self):
+        from routers.notifications import share_rating
+
+        with patch("routers.notifications.sender_media_rating", AsyncMock(return_value=7.5)) as lookup:
+            response = await share_rating("movie", 550, None, SimpleNamespace(id=1), SimpleNamespace())
+        self.assertEqual(response, {"rating": 7.5})
+        lookup.assert_awaited_once()
+
     def test_requires_media_identifier_and_unique_recipients(self):
         with self.assertRaises(ValueError):
             MediaShareRequest(recipient_ids=[2], media_type="series", title="Example")
@@ -178,7 +190,7 @@ class EmailNotificationTests(unittest.IsolatedAsyncioTestCase):
         with patch("core.email.email_enabled", return_value=True), \
              patch("core.email.send_friend_media_share_email", AsyncMock()) as send:
             await email_friend_media_share(db, 1, 2, "Example", "/show/123")
-        send.assert_awaited_once_with("a@x.io", "Bob", "Example", "/show/123")
+        send.assert_awaited_once_with("a@x.io", "Bob", "Example", "/show/123", None, None)
 
     async def test_friend_media_share_email_respects_opt_out(self):
         recipient = SimpleNamespace(email="a@x.io", email_confirmed=True)
@@ -218,6 +230,25 @@ class EmailNotificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Bob &amp; Co", body)
         self.assertIn("&lt;Example&gt;", body)
         self.assertIn("/movie/5", body)
+
+    async def test_friend_media_share_email_includes_sender_rating(self):
+        from core.email import send_friend_media_share_email
+
+        with patch("core.email.send_email", AsyncMock()) as send:
+            await send_friend_media_share_email("a@x.io", "Bob", "Example", "/movie/5", 8.5)
+        self.assertIn("Bob rated it", send.await_args.args[2])
+        self.assertIn("8.5", send.await_args.args[2])
+
+        with patch("core.email.send_email", AsyncMock()) as send:
+            await send_friend_media_share_email("a@x.io", "Bob", "Example", "/movie/5")
+        self.assertNotIn("rated it", send.await_args.args[2])
+
+    async def test_friend_media_share_email_includes_escaped_comment(self):
+        from core.email import send_friend_media_share_email
+
+        with patch("core.email.send_email", AsyncMock()) as send:
+            await send_friend_media_share_email("a@x.io", "Bob", "Example", "/movie/5", None, "Great <b>film</b>")
+        self.assertIn("Great &lt;b&gt;film&lt;/b&gt;", send.await_args.args[2])
 
     async def test_friend_request_email_is_sent_to_confirmed_addressee(self):
         from core.notifications import email_friend_request

@@ -1178,6 +1178,7 @@ export interface NotificationEntry {
   created_at: string;
   actor: FriendEntry;
   rating: number | null;
+  comment?: string | null;
   media: { title: string; type: string; link: string | null } | null;
 }
 
