@@ -6,6 +6,7 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from core.watchlist_alerts import WATCHLIST_RELEASE, WATCHLIST_STREAMING
 from core.notifications import FRIEND_MEDIA_SHARE, email_friend_media_share, sender_media_rating
 from db import get_db
 from dependencies import get_current_user
@@ -18,6 +19,7 @@ from routers.friends import _people
 router = APIRouter()
 
 LIST_LIMIT = 30
+WATCHLIST_TYPES = {WATCHLIST_RELEASE, WATCHLIST_STREAMING}
 
 
 class MediaShareRequest(BaseModel):
@@ -106,7 +108,7 @@ async def list_notifications(current_user: User = Depends(get_current_user), db:
         .limit(LIST_LIMIT)
     )).scalars().all()
 
-    people = await _people(db, list({n.actor_id for n in rows}))
+    people = await _people(db, list({n.actor_id for n in rows if n.actor_id}))
     media_ids = [n.media_id for n in rows if n.media_id]
     media = {}
     if media_ids:
@@ -114,8 +116,8 @@ async def list_notifications(current_user: User = Depends(get_current_user), db:
 
     items = []
     for n in rows:
-        actor = people.get(n.actor_id)
-        if not actor:
+        actor = people.get(n.actor_id) if n.actor_id else None
+        if not actor and n.type not in WATCHLIST_TYPES:
             continue
         m = media.get(n.media_id) if n.media_id else None
         items.append({

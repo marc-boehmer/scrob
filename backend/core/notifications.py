@@ -150,7 +150,7 @@ async def send_rating_digests(db: AsyncSession) -> int:
         return 0
 
     users = {u.id: u for u in (await db.execute(
-        select(User).options(selectinload(User.profile)).where(User.id.in_({n.user_id for n in rows} | {n.actor_id for n in rows}))
+        select(User).options(selectinload(User.profile)).where(User.id.in_({n.user_id for n in rows} | {n.actor_id for n in rows if n.actor_id}))
     )).scalars().all()}
     media = {m.id: m for m in (await db.execute(
         select(Media).options(selectinload(Media.show)).where(Media.id.in_({n.media_id for n in rows if n.media_id}))

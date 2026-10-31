@@ -31,6 +31,7 @@ from .rewatch import ShowRewatch, RewatchProgress
 from .title_credits import TitleCredits
 from .calendar_cache import UserCalendarCache
 from .watchlist import WatchlistItem
+from .watchlist_alert import WatchlistAlertState
 from .plex_pending_push import PlexPendingPush
 from .connection_push_state import ConnectionPushState
 from .oauth_device import OAuthDeviceGrant
@@ -70,4 +71,5 @@ __all__ = [
     "OAuthDeviceGrant",
     "OidcIdentity",
     "WatchlistItem",
+    "WatchlistAlertState",
 ]

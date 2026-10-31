@@ -200,8 +200,8 @@ const shareDescription = isMovie
                 )}
                 {item.status && (
                   isMovie ? (
-                    <button id="release-schedule-btn" class="capitalize px-2 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-[10px] font-black text-zinc-400 tracking-widest hover:bg-zinc-700 hover:text-zinc-300 transition-colors cursor-pointer">
-                      {item.status}
+                    <button id="release-schedule-btn" aria-controls="release-schedule-popover" aria-expanded="false" class="px-2 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-[10px] font-black text-zinc-400 tracking-widest hover:bg-zinc-700 hover:text-zinc-300 transition-colors cursor-pointer">
+                      Status
                     </button>
                   ) : (
                     <span class="capitalize px-2 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-[10px] font-black text-zinc-400 tracking-widest">
@@ -473,9 +473,13 @@ const shareDescription = isMovie
   {isMovie && item?.status && (
     <div id="release-schedule-popover" class="hidden absolute z-50 w-52 bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl overflow-hidden">
       <div class="px-3 pt-2.5 pb-2 border-b border-zinc-800">
-        <p class="text-[10px] font-black text-zinc-500 tracking-widest uppercase">Release Schedule</p>
+        <p class="text-[10px] font-black text-zinc-500 tracking-widest uppercase">Status &amp; Release Schedule</p>
       </div>
       <div class="px-3 py-2.5 flex flex-col gap-2">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-zinc-500 text-xs">Status</span>
+          <span class="text-xs font-bold text-zinc-300 capitalize">{item.status}</span>
+        </div>
         <div class="flex items-center justify-between gap-2">
           <span class="text-zinc-500 text-xs">Theatrical</span>
           {theatricalDate ? (
@@ -614,6 +618,7 @@ const shareDescription = isMovie
     releaseBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       const hidden = releasePopover.classList.toggle('hidden');
+      releaseBtn.setAttribute('aria-expanded', String(!hidden));
       if (!hidden) {
         const rect = releaseBtn.getBoundingClientRect();
         const popW = releasePopover.offsetWidth;
@@ -625,10 +630,14 @@ const shareDescription = isMovie
     document.addEventListener('click', (e) => {
       if (!releasePopover.classList.contains('hidden') && !releasePopover.contains(e.target as Node)) {
         releasePopover.classList.add('hidden');
+        releaseBtn.setAttribute('aria-expanded', 'false');
       }
     });
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') releasePopover.classList.add('hidden');
+      if (e.key === 'Escape') {
+        releasePopover.classList.add('hidden');
+        releaseBtn.setAttribute('aria-expanded', 'false');
+      }
     });
   }
 </script>

@@ -13,7 +13,7 @@ class Notification(Base):
 
     id         : Mapped[int]             = mapped_column(Integer, primary_key=True)
     user_id    : Mapped[int]             = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    actor_id   : Mapped[int]             = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    actor_id   : Mapped[Optional[int]]   = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     type       : Mapped[str]             = mapped_column(String(32), nullable=False)
     media_id   : Mapped[Optional[int]]   = mapped_column(ForeignKey("media.id", ondelete="CASCADE"), nullable=True)
     season_number : Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

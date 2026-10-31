@@ -328,7 +328,7 @@ try {
           <div class="flex items-start justify-between gap-6 p-4 bg-zinc-900/60 rounded-xl border border-zinc-800">
             <div>
               <p class="text-sm font-semibold text-zinc-100 mb-1">Email notifications</p>
-              <p class="text-xs text-zinc-400">Choose which friend activity emails you receive. Requires email to be set up on this server.</p>
+              <p class="text-xs text-zinc-400">Choose which emails you receive. Watchlist alerts are checked daily and use your profile's country and streaming services. Requires email to be set up on this server; streaming checks also need a TMDB API key.</p>
             </div>
             <div class="flex flex-col gap-3 shrink-0 mt-0.5">
               <div class="flex items-center gap-2">
@@ -368,6 +368,32 @@ try {
                     checked={settings.email_friend_media_shares !== false}
                   />
                   <div class="w-11 h-6 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500"></div>
+                </label>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-zinc-400 w-24 text-right">Release dates</span>
+                <label class="relative inline-flex items-center shrink-0 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    name="email_watchlist_release_dates"
+                    id="email-watchlist-release-dates-toggle"
+                    class="sr-only peer"
+                    checked={settings.email_watchlist_release_dates !== false}
+                  />
+                  <div class="w-11 h-6 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500"></div>
+                </label>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-zinc-400 w-24 text-right">Streaming</span>
+                <label class="relative inline-flex items-center shrink-0 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    name="email_watchlist_streaming"
+                    id="email-watchlist-streaming-toggle"
+                    class="sr-only peer"
+                    checked={settings.email_watchlist_streaming !== false}
+                  />
+                  <div class="w-11 h-6 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full peer-checked:bg-blue-500"></div>
                 </label>
               </div>
             </div>
@@ -1934,6 +1960,8 @@ try {
     ['email-friend-requests-toggle', 'email_friend_requests'],
     ['email-rating-digest-toggle', 'email_rating_digest'],
     ['email-friend-media-shares-toggle', 'email_friend_media_shares'],
+    ['email-watchlist-release-dates-toggle', 'email_watchlist_release_dates'],
+    ['email-watchlist-streaming-toggle', 'email_watchlist_streaming'],
   ] as const) {
     const el = document.getElementById(id) as HTMLInputElement | null;
     if (!el) continue;

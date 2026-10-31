@@ -870,10 +870,10 @@ const bottomNavItem = (active: boolean) =>
 
       type NotifItem = {
         id: number;
-        type: 'friend_request' | 'friend_rating' | 'friend_media_share';
+        type: 'friend_request' | 'friend_rating' | 'friend_media_share' | 'watchlist_release' | 'watchlist_streaming';
         is_read: boolean;
         created_at: string;
-        actor: { id: number; display_name: string };
+        actor: { id: number; display_name: string } | null;
         rating: number | null;
         comment?: string | null;
         media: { title: string; type: string; season_number: number | null; episode_number: number | null; link: string | null } | null;
@@ -900,14 +900,18 @@ const bottomNavItem = (active: boolean) =>
       const describe = (n: NotifItem) => {
         if (n.type === 'friend_request') return { text: ' sent you a friend request', href: '/friends' };
         const m = n.media;
+        if (n.type === 'watchlist_release' || n.type === 'watchlist_streaming') {
+          return { text: `: ${n.comment ?? ''}`, href: m?.link ?? '/watchlist' };
+        }
+        const actorId = n.actor?.id;
         if (n.type === 'friend_media_share') {
-          return { text: ` shared ${m?.title ?? 'a title'} with you${n.rating != null ? ` (${n.rating}/10)` : ''}`, href: m?.link ?? `/profile/${n.actor.id}` };
+          return { text: ` shared ${m?.title ?? 'a title'} with you${n.rating != null ? ` (${n.rating}/10)` : ''}`, href: m?.link ?? `/profile/${actorId}` };
         }
         const rated = n.rating != null ? ` (${n.rating}/10)` : '';
         let what = m?.title ?? 'a title';
         if (m?.type === 'episode' && m.season_number != null && m.episode_number != null) what += ` S${m.season_number}E${m.episode_number}`;
         else if (m?.type === 'series' && m.season_number != null) what += ` – Season ${m.season_number}`;
-        return { text: ` rated ${what}${rated}`, href: m?.link ?? `/profile/${n.actor.id}` };
+        return { text: ` rated ${what}${rated}`, href: m?.link ?? `/profile/${actorId}` };
       };
 
       const renderNotifications = (items: NotifItem[]) => {
@@ -933,7 +937,7 @@ const bottomNavItem = (active: boolean) =>
           msg.className = 'block text-zinc-300';
           const who = document.createElement('span');
           who.className = 'font-bold text-zinc-100';
-          who.textContent = n.actor.display_name;
+          who.textContent = n.actor?.display_name ?? n.media?.title ?? 'Watchlist';
           msg.append(who, text);
           const when = document.createElement('span');
           when.className = 'block text-xs text-zinc-500 mt-0.5';
@@ -962,7 +966,7 @@ const bottomNavItem = (active: boolean) =>
               btn.addEventListener('click', async () => {
                 actions.querySelectorAll('button').forEach((b) => ((b as HTMLButtonElement).disabled = true));
                 try {
-                  const res = await fetch(`/api/proxy/friends/${n.actor.id}${path}`, { method, headers: authHeaders() });
+                  const res = await fetch(`/api/proxy/friends/${n.actor?.id}${path}`, { method, headers: authHeaders() });
                   if (res.ok) { await loadNotifications(); return; }
                 } catch {}
                 actions.querySelectorAll('button').forEach((b) => ((b as HTMLButtonElement).disabled = false));

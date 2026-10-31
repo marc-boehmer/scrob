@@ -332,6 +332,31 @@ async def _rating_digest_mailer():
             log.exception("Rating digest failed")
 
 
+async def _watchlist_alert_mailer():
+    """Once a day, check watchlist titles for reached release dates and new streaming providers."""
+    import logging
+    from datetime import datetime, timezone
+    from core.watchlist_alerts import send_watchlist_alerts
+    from db import async_sessionmaker
+
+    log = logging.getLogger("watchlist_alerts")
+    target = (settings.digest_hour_utc, settings.digest_minute_utc)
+    now = datetime.now(timezone.utc)
+    last_run = now.date() if (now.hour, now.minute) >= target else None
+    while True:
+        await asyncio.sleep(30)
+        now = datetime.now(timezone.utc)
+        if (now.hour, now.minute) < target or last_run == now.date():
+            continue
+        last_run = now.date()
+        try:
+            async with async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)() as db:
+                sent = await send_watchlist_alerts(db)
+            log.info("Watchlist email alerts: %d email(s) sent", sent)
+        except Exception:
+            log.exception("Watchlist email alert scan failed")
+
+
 async def _emby_progress_poller():
     """Emby's webhook system has no progress event (only start/pause/unpause/
     stop), so a PlaybackSession opened by an Emby webhook freezes at the last
@@ -806,10 +831,12 @@ async def lifespan(app: FastAPI):
     show_metadata_task = asyncio.create_task(_show_metadata_refresher())
     simkl_token_task = asyncio.create_task(_simkl_token_refresher())
     rating_digest_task = asyncio.create_task(_rating_digest_mailer())
+    watchlist_alert_task = asyncio.create_task(_watchlist_alert_mailer())
 
     yield
 
     rating_digest_task.cancel()
+    watchlist_alert_task.cancel()
     simkl_token_task.cancel()
     try:
         await simkl_token_task
@@ -839,6 +866,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await show_metadata_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await watchlist_alert_task
     except asyncio.CancelledError:
         pass
 

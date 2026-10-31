@@ -211,3 +211,16 @@ async def send_rating_digest_email(to: str, items: list[tuple[str, str, float | 
         "Open Scrob",
     )
     await send_email(to, f"{count} new rating{'s' if count != 1 else ''} from your friends on Scrob", html)
+
+
+async def send_watchlist_alert_email(to: str, title: str, link: str, events: list[str]) -> None:
+    escaped_title = html_lib.escape(title)
+    url = html_lib.escape(f"{settings.server_url.rstrip('/')}{link}", quote=True)
+    event_rows = "".join(f"<li>{html_lib.escape(event)}</li>" for event in events)
+    html = _card(
+        "Watchlist update",
+        f"<p><strong style=\"color: #f4f4f5;\">{escaped_title}</strong> has an update:</p><ul>{event_rows}</ul>",
+        "View title",
+        button_url=url,
+    )
+    await send_email(to, "A title on your Scrob watchlist has an update", html)

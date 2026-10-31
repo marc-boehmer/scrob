@@ -64,6 +64,7 @@ This is a fork of [ellite/scrob](https://github.com/ellite/scrob) that adds a so
 - **Notifications**: a bell in the top bar for incoming friend requests (accept/decline inline) and for first-time ratings by friends or followed users.
 - **Share movies and shows**: send selected friends an in-app notification and, if enabled in their email settings, an email; or share a link through your device's share sheet, email, or copy link.
 - **Watchlist**: a personal "want to watch" list for movies and shows, available from cards and detail pages.
+- **Watchlist alerts**: a daily check notifies you (bell and, with SMTP configured, email) when a watchlist title's release date is reached or it newly appears on a streaming service you selected under **User settings → Streaming Services** (none selected = any service in your country). Toggle "Release dates" and "Streaming" in **Settings → Email notifications**.
 
 ## Features
 
@@ -86,6 +87,7 @@ This is a fork of [ellite/scrob](https://github.com/ellite/scrob) that adds a so
 - **Friends' ratings**: Movie, show, season and episode pages include a section showing how your friends - and public profiles you follow - rated the title, in separate **Friends** and **Follows** tabs (a tab only appears when it has ratings; visible according to each user's privacy level).
 - **Notifications**: A bell in the top bar shows an unread badge and a dropdown of your latest notifications: incoming friend requests (which you can accept or decline right from the dropdown), and whenever a friend - or someone you follow - rates a movie, show, season or episode for the first time (followers are only notified for *Public* profiles, and *Private* profiles generate none). Click one to jump to the title or the Friends page, use **Mark all as read** to clear the badge, or **Clear all** to delete them.
 - **Watchlist (want to watch)**: Add movies and shows to a personal **Watchlist** from any card or detail page, and open it directly from the desktop navigation or mobile bottom navigation.
+- **Watchlist alerts**: Once a day (at the digest time), Scrob checks every watchlist movie and show. It sends a bell notification, plus an email if SMTP is configured and your address is confirmed, when the theatrical release date is reached or the title newly becomes available to stream (flatrate) in your profile country. Only services selected under **User settings → Streaming Services** count; with none selected, every service counts. The first check only records what is already available, so no email is sent for existing availability. The movie detail page's **Status** button shows the production status and release schedule.
 - **Release schedule**: Movie pages show the full release schedule - theatrical, digital, and physical dates - sourced from TMDB.
 - **TMDB integration**: Rich metadata for every title - posters, backdrops, cast, crew, trailers, collections, and more.
 - **RPDB rating posters**: Optionally use RatingPosterDB movie and show posters with embedded ratings. Configure your own key and customize the artwork and rating sources through RPDB.

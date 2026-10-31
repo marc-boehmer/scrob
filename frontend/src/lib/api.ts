@@ -547,6 +547,8 @@ export interface UserSettings {
   email_friend_requests: boolean;
   email_rating_digest: boolean;
   email_friend_media_shares: boolean;
+  email_watchlist_release_dates: boolean;
+  email_watchlist_streaming: boolean;
   duplicate_watch_window_minutes: number | null;
   condense_history_by_show: boolean;
 }
@@ -1173,10 +1175,10 @@ export interface FriendEntry {
 
 export interface NotificationEntry {
   id: number;
-  type: "friend_request" | "friend_rating" | "friend_media_share";
+  type: "friend_request" | "friend_rating" | "friend_media_share" | "watchlist_release" | "watchlist_streaming";
   is_read: boolean;
   created_at: string;
-  actor: FriendEntry;
+  actor: FriendEntry | null;
   rating: number | null;
   comment?: string | null;
   media: { title: string; type: string; link: string | null } | null;
