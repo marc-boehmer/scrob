@@ -143,8 +143,15 @@ def email_enabled() -> bool:
     return bool(settings.smtp_address)
 
 
+def _base_url() -> str:
+    base = (settings.server_url or "").strip().rstrip("/")
+    if base and not re.match(r"^https?://", base, re.I):
+        base = f"https://{base}"
+    return base
+
+
 def _card(heading: str, body_html: str, button: str | None = None, button_url: str | None = None) -> str:
-    link = button_url or settings.server_url
+    link = button_url or _base_url()
     btn = (
         f'''<table role="presentation" cellspacing="0" cellpadding="0" border="0"><tr>
           <td bgcolor="#f4f4f5" style="border-radius: 8px;">
@@ -187,7 +194,7 @@ async def send_friend_media_share_email(
 ) -> None:
     name = html_lib.escape(sender_name)
     escaped_title = html_lib.escape(title)
-    url = html_lib.escape(f"{settings.server_url.rstrip('/')}{link}", quote=True)
+    url = html_lib.escape(f"{_base_url()}{link}", quote=True)
     rating_html = f"<p>{name} rated it <strong style=\"color: #f4f4f5;\">{rating:g}</strong>.</p>" if rating is not None else ""
     if comment:
         rating_html += (
@@ -222,7 +229,7 @@ async def send_rating_digest_email(to: str, items: list[tuple[str, str, float | 
 
 async def send_watchlist_alert_email(to: str, title: str, link: str, events: list[str]) -> None:
     escaped_title = html_lib.escape(title)
-    url = html_lib.escape(f"{settings.server_url.rstrip('/')}{link}", quote=True)
+    url = html_lib.escape(f"{_base_url()}{link}", quote=True)
     event_rows = "".join(f"<li>{html_lib.escape(event)}</li>" for event in events)
     html = _card(
         "Watchlist update",
