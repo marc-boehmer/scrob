@@ -146,8 +146,15 @@ def email_enabled() -> bool:
 def _card(heading: str, body_html: str, button: str | None = None, button_url: str | None = None) -> str:
     link = button_url or settings.server_url
     btn = (
-        f'''<a href="{link}" style="display: inline-block; background: #f4f4f5; color: #09090b; font-weight: 700;
-                  padding: 12px 24px; border-radius: 8px; text-decoration: none;">{button}</a>'''
+        f'''<table role="presentation" cellspacing="0" cellpadding="0" border="0"><tr>
+          <td bgcolor="#f4f4f5" style="border-radius: 8px;">
+            <a href="{link}" target="_blank" rel="noopener noreferrer"
+               style="display: inline-block; color: #09090b; font-weight: 700; padding: 12px 24px;
+                      border-radius: 8px; text-decoration: none;">{button}</a>
+          </td></tr></table>
+        <p style="color: #71717a; font-size: 12px; margin-top: 16px; word-break: break-all;">
+          Button not working? Open this link: <a href="{link}" style="color: #a1a1aa;">{link}</a>
+        </p>'''
         if button else ""
     )
     return f"""
