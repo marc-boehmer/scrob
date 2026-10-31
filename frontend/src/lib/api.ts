@@ -1475,7 +1475,7 @@ export const api = {
   },
 
   media: {
-    list: (params?: { type?: string; sort?: string; page?: number; genre?: string[]; year?: number[]; watched?: string[]; in_list?: string }, token?: string) =>
+    list: (params?: { type?: string; sort?: string; page?: number; page_size?: number; genre?: string[]; year?: number[]; watched?: string[]; in_list?: string }, token?: string) =>
       get<{ page: number; page_size: number; total_pages: number; total_results: number; results: MediaItem[] }>("/media", params, token),
 
     years: (type: string, token?: string) =>

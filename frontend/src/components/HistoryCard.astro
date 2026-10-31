@@ -30,7 +30,7 @@ const posterPath = ratingPosterUrl(tmdbImageUrl(rawPoster, "w500"), media, Astro
 // Watch history is movie/episode only (enforced server-side, see #358).
 // Anything else still routes through episodeHref rather than a movie URL that
 // would 404.
-const href = media.type === 'movie' ? `/media/movie/${media.tmdb_id}` : episodeHref(media);
+const href = media.type === 'movie' ? `/movie/${media.tmdb_id}` : episodeHref(media);
 ---
 
 <div

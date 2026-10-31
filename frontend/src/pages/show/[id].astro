@@ -305,7 +305,7 @@ const shareDescription = show?.overview?.trim() || show?.tagline || (show ? `Dis
             )}
 
             <!-- Where to Watch -->
-            {show.where_to_watch && show.where_to_watch.length > 0 && (
+            {((show.where_to_watch?.length ?? 0) > 0 || user && show.tmdb_id) && (
               <div class="mb-8">
                 <h2 class="text-sm font-black text-zinc-500 mb-3 uppercase tracking-widest">Where to Watch</h2>
                 <div class="flex flex-wrap gap-2">
@@ -326,6 +326,17 @@ const shareDescription = show?.overview?.trim() || show?.tagline || (show ? `Dis
                       <span class="text-zinc-300 text-xs font-semibold">{s.name}</span>
                     </a>
                   ))}
+                  {user && show.tmdb_id && (
+                    <a
+                      href={`https://cineby.rocks/tv/${show.tmdb_id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg hover:border-zinc-600 transition-colors"
+                    >
+                      <span class="text-zinc-400 text-xs">▶</span>
+                      <span class="text-zinc-300 text-xs font-semibold">Cineby</span>
+                    </a>
+                  )}
                 </div>
               </div>
             )}

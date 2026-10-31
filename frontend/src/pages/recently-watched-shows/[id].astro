@@ -44,7 +44,7 @@ function backdropUrl(path: string | null): string | null {
 }
 
 function mediaUrl(type: string, tmdbId: number): string {
-  if (type === "movie") return `/media/movie/${tmdbId}`;
+  if (type === "movie") return `/movie/${tmdbId}`;
   if (type === "series") return `/show/${tmdbId}`;
   return `/media/${type}/${tmdbId}`;
 }

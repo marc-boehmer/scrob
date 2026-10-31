@@ -56,7 +56,7 @@ function posterUrl(path: string | null, size = "w342"): string | null {
 }
 
 function mediaUrl(type: string, tmdbId: number): string {
-  if (type === "movie") return `/media/movie/${tmdbId}`;
+  if (type === "movie") return `/movie/${tmdbId}`;
   if (type === "series") return `/show/${tmdbId}`;
   return `/media/${type}/${tmdbId}`;
 }
@@ -72,7 +72,7 @@ function commentKind(item: { media_type: string; season_number: number | null; e
 
 function commentUrl(item: { media_type: string; tmdb_id: number | null; tvdb_id: number | null; season_number: number | null; episode_number: number | null }): string {
   const kind = commentKind(item);
-  if (kind === "movie") return `/media/movie/${item.tmdb_id}`;
+  if (kind === "movie") return `/movie/${item.tmdb_id}`;
   const base = item.tvdb_id && !item.tmdb_id ? `/show/tvdb/${item.tvdb_id}` : `/show/${item.tmdb_id}`;
   if (kind === "season") return `${base}/season/${item.season_number}`;
   if (kind === "episode") return `${base}/season/${item.season_number}/${item.episode_number}`;

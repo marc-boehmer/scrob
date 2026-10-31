@@ -27,7 +27,7 @@ const PUBLIC_RECENTLY_WATCHED_PAGE_RE = /^\/recently-watched-(?:movies|shows)\/\
 // the login gate even though they share a prefix with public detail pages.
 const PUBLIC_EXPLORE_PAGE_RE = /^\/(?:(?:movies|shows|search|lists|airing-today|discover)?|trending\/(?:movies|shows))\/?$/;
 const PUBLIC_CATALOG_PAGE_RE =
-  /^\/(?:(?:movies|shows|search|airing-today|discover)?|trending\/(?:movies|shows)|collection\/\d+|media\/(?:movie|episode)\/\d+|show\/(?:tvdb\/)?\d+(?:\/season\/\d+(?:\/\d+)?)?|person\/\d+|network\/\d+|studio\/\d+)\/?$/;
+  /^\/(?:(?:movies|shows|search|airing-today|discover)?|trending\/(?:movies|shows)|collection\/\d+|(?:movie|media\/(?:movie|episode))\/\d+|show\/(?:tvdb\/)?\d+(?:\/season\/\d+(?:\/\d+)?)?|person\/\d+|network\/\d+|studio\/\d+)\/?$/;
 // User collections have per-user state and stay behind the login gate.
 const PRIVATE_COLLECTION_PAGE_RE = /^\/collection\/(?:movies|shows)\/?$/;
 // The detail pages' "More like this" row and the person page's credits
@@ -44,7 +44,8 @@ const PUBLIC_TRAILER_PROXY_RE = /^\/api\/proxy\/media\/(?:movie|series)\/\d+\/tr
 // above, otherwise the fetch() gets redirected to /login (see the matching
 // comment on PUBLIC_MEDIA_ROWS_PROXY_RE below for why that looks like a
 // silent failure instead of an obvious one).
-const PUBLIC_TVDB_SEARCH_PROXY_RE = /^\/api\/proxy\/media\/search-tvdb\/?$/;
+// The nav search box's preview dropdown fetches /media/search the same way.
+const PUBLIC_TVDB_SEARCH_PROXY_RE = /^\/api\/proxy\/media\/search(?:-tvdb)?\/?$/;
 // The homepage's and /discover's data rows are loaded client-side straight
 // from the backend proxy (not a same-origin partial), so the proxy path
 // itself needs the same allowance - otherwise the fetch() gets redirected to

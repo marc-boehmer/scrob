@@ -219,7 +219,7 @@ if (token) {
           ? (data.sources || []).map(sourceLabel).join('')
           : '<span class="text-sm text-zinc-500">No streaming source found</span>';
 
-        document.getElementById('pick-view-link').href = data.type === 'series' ? '/show/' + data.tmdb_id : '/media/movie/' + data.tmdb_id;
+        document.getElementById('pick-view-link').href = data.type === 'series' ? '/show/' + data.tmdb_id : '/movie/' + data.tmdb_id;
       }
 
       if (imgSrc) {

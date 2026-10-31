@@ -479,7 +479,7 @@ function skeletonWide() {
 
   function itemUrl(item) {
     if (item.type === 'series') return '/show/' + item.tmdb_id;
-    return '/media/movie/' + item.tmdb_id;
+    return '/movie/' + item.tmdb_id;
   }
 
   // 2:3 poster card — movies
@@ -751,7 +751,7 @@ function skeletonWide() {
           : '<span class="text-sm text-zinc-500">No streaming source found</span>';
 
         const viewLink = document.getElementById('pick-view-link');
-        viewLink.href = data.type === 'series' ? '/show/' + data.tmdb_id : '/media/movie/' + data.tmdb_id;
+        viewLink.href = data.type === 'series' ? '/show/' + data.tmdb_id : '/movie/' + data.tmdb_id;
       }
 
       if (imgSrc) {

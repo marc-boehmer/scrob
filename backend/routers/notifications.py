@@ -53,7 +53,7 @@ class MediaShareRequest(BaseModel):
 
 def _media_link(media: Media, season_number: int | None) -> str | None:
     if media.media_type == "movie":
-        return f"/media/movie/{media.tmdb_id}" if media.tmdb_id else None
+        return f"/movie/{media.tmdb_id}" if media.tmdb_id else None
     show = media.show if media.media_type == "episode" else media
     if not show or not (show.tmdb_id or show.tvdb_id):
         return None
@@ -156,7 +156,7 @@ async def share_media(
         raise HTTPException(status_code=403, detail="You can only share titles with accepted friends.")
 
     if body.media_type == "movie":
-        link = f"/media/movie/{body.tmdb_id}"
+        link = f"/movie/{body.tmdb_id}"
     elif body.tmdb_id is not None:
         link = f"/show/{body.tmdb_id}"
     else:

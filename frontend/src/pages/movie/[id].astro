@@ -1,0 +1,7 @@
+---
+export const prerender = false;
+
+// Canonical movie URL; rendered by the generic media detail page.
+const { id } = Astro.params;
+return Astro.rewrite(`/media/movie/${id}`);
+---

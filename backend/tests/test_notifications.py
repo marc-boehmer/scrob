@@ -104,15 +104,15 @@ class MediaShareNotificationTests(unittest.IsolatedAsyncioTestCase):
             n.actor_id == 1
             and n.type == "friend_media_share"
             and n.shared_media_title == "Fight Club"
-            and n.shared_media_link == "/media/movie/550"
+            and n.shared_media_link == "/movie/550"
             for n in notifications
         ))
         db.commit.assert_awaited_once()
         self.assertEqual(
             send_email.await_args_list,
             [
-                call(db, 1, 2, "Fight Club", "/media/movie/550"),
-                call(db, 1, 3, "Fight Club", "/media/movie/550"),
+                call(db, 1, 2, "Fight Club", "/movie/550"),
+                call(db, 1, 3, "Fight Club", "/movie/550"),
             ],
         )
 
@@ -211,13 +211,13 @@ class EmailNotificationTests(unittest.IsolatedAsyncioTestCase):
         from core.email import send_friend_media_share_email
 
         with patch("core.email.send_email", AsyncMock()) as send:
-            await send_friend_media_share_email("a@x.io", "Bob & Co", "<Example>", "/media/movie/5")
+            await send_friend_media_share_email("a@x.io", "Bob & Co", "<Example>", "/movie/5")
 
         subject, body = send.await_args.args[1:]
         self.assertEqual(subject, "A friend shared a title with you on Scrob")
         self.assertIn("Bob &amp; Co", body)
         self.assertIn("&lt;Example&gt;", body)
-        self.assertIn("/media/movie/5", body)
+        self.assertIn("/movie/5", body)
 
     async def test_friend_request_email_is_sent_to_confirmed_addressee(self):
         from core.notifications import email_friend_request
