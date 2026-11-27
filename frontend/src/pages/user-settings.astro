@@ -4,12 +4,14 @@ import { api } from "../lib/api";
 import type { UserPreferences, PrivacyLevel } from "../lib/api";
 import { genreLabel, localizedCountryName, localizedLanguageName, sortByLabel } from "../lib/labels";
 import { m } from "../paraglide/messages.js";
+import { UI_LANGUAGES } from "../lib/ui-languages";
 
 const { token } = Astro.locals;
 const [profileData, me] = await Promise.all([
   api.profile.get(token!).catch(() => null),
   api.auth.me(token!),
 ]);
+const accountSettings = Astro.locals.settings ?? (await api.auth.getSettings(token!).catch(() => null));
 
 const prefs: UserPreferences = {
   display_name: null,
@@ -257,6 +259,25 @@ const COUNTRIES = [
         </div>
       </section>
 
+      <!-- Interface language -->
+      <section>
+        <div class="mb-4 border-b border-zinc-800 pb-2">
+          <h2 class="section-headline">{m.settings_ui_language_title()}</h2>
+        </div>
+        <div class="space-y-2 max-w-xs">
+          <label for="ui-language-select" class="block text-sm font-medium text-zinc-400">{m.settings_ui_language_title()}</label>
+          <select
+            id="ui-language-select"
+            class="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+          >
+            {UI_LANGUAGES.map(({ code, name }) => (
+              <option value={code} lang={code} selected={(accountSettings?.ui_language ?? 'en') === code}>{name}</option>
+            ))}
+          </select>
+          <p class="text-xs text-zinc-500">{m.settings_ui_language_description()}</p>
+        </div>
+      </section>
+
       <!-- Region -->
       <section>
         <div class="mb-4 border-b border-zinc-800 pb-2">
@@ -474,6 +495,7 @@ const COUNTRIES = [
 
 <script>
   import { m } from '../paraglide/messages.js';
+  import { cookieName as localeCookieName, cookieMaxAge as localeCookieMaxAge } from '../paraglide/runtime.js';
 
   function setup() {
     const appData = document.getElementById('app-data');
@@ -500,6 +522,28 @@ const COUNTRIES = [
       (window as Window & { _msgTimeout?: ReturnType<typeof setTimeout> })._msgTimeout =
         setTimeout(() => msg.classList.add('hidden'), 4000);
     }
+
+    // UI language: saved on the account (so other devices pick it up) and
+    // mirrored into the cookie Paraglide reads, then reload to re-render.
+    const uiLanguageSelect = document.getElementById('ui-language-select') as HTMLSelectElement | null;
+    uiLanguageSelect?.addEventListener('change', async () => {
+      const value = uiLanguageSelect.value;
+      uiLanguageSelect.disabled = true;
+      try {
+        const res = await fetch('/api/proxy/auth/settings', {
+          method: 'PATCH',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ui_language: value }),
+        });
+        if (!res.ok) throw new Error();
+      } catch {
+        uiLanguageSelect.disabled = false;
+        showMessage(m.settings_ui_language_save_failed(), 'error');
+        return;
+      }
+      document.cookie = `${localeCookieName}=${value}; path=/; SameSite=Lax; max-age=${localeCookieMaxAge}`;
+      location.reload();
+    });
 
     const emailInput = document.getElementById('new-email') as HTMLInputElement | null;
     const changeEmailBtn = document.getElementById('change-email-btn') as HTMLButtonElement | null;

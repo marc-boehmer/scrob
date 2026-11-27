@@ -3,7 +3,6 @@ import Base from "../layouts/Base.astro";
 import { api } from "../lib/api";
 import type { TotpBackupCode, OidcIdentity } from "../lib/api";
 import { connectionIconHtml } from "../lib/connectionIcons";
-import { UI_LANGUAGES } from "../lib/ui-languages";
 import { m } from "../paraglide/messages.js";
 import { formatDateTime } from "../lib/format";
 import { getViewerTimeZone } from "../lib/viewerTimeZone";
@@ -228,20 +227,6 @@ try {
       <section>
         <h2 class="section-headline mb-4 border-b border-zinc-800 pb-2">{m.settings_display_settings()}</h2>
         <div class="space-y-6">
-          <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3 sm:gap-6 p-4 bg-zinc-900/60 rounded-xl border border-zinc-800">
-            <div>
-              <label for="ui-language-select" class="block text-sm font-semibold text-zinc-100 mb-1">{m.settings_ui_language_title()}</label>
-              <p class="text-xs text-zinc-400">{m.settings_ui_language_description()}</p>
-            </div>
-            <select
-              id="ui-language-select"
-              class="shrink-0 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-            >
-              {UI_LANGUAGES.map(({ code, name }) => (
-                <option value={code} lang={code} selected={(settings.ui_language ?? 'en') === code}>{name}</option>
-              ))}
-            </select>
-          </div>
           <div class="flex items-start justify-between gap-6 p-4 bg-zinc-900/60 rounded-xl border border-zinc-800">
             <div>
               <p class="text-sm font-semibold text-zinc-100 mb-1">{m.settings_shuffle_next_up()}</p>
@@ -1228,7 +1213,6 @@ try {
 </Base>
 <script>
   import { m } from '../paraglide/messages.js';
-  import { cookieName as localeCookieName, cookieMaxAge as localeCookieMaxAge } from '../paraglide/runtime.js';
 
   const appData = document.getElementById('app-data');
   const token = appData?.dataset.token ?? '';
@@ -2367,30 +2351,6 @@ try {
       });
     });
   }
-
-  // UI language: saved on the account (so other devices pick it up - see
-  // middleware.ts) and mirrored into the cookie Paraglide reads, then reload so
-  // the whole page re-renders in it.
-  const uiLanguageSelect = document.getElementById('ui-language-select') as HTMLSelectElement | null;
-  uiLanguageSelect?.addEventListener('change', async () => {
-    const value = uiLanguageSelect.value;
-    uiLanguageSelect.disabled = true;
-    const tok = (document.getElementById('app-data') as HTMLElement | null)?.dataset.token ?? '';
-    try {
-      const res = await fetch('/api/proxy/auth/settings', {
-        method: 'PATCH',
-        headers: { 'Authorization': `Bearer ${tok}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ui_language: value }),
-      });
-      if (!res.ok) throw new Error();
-    } catch {
-      uiLanguageSelect.disabled = false;
-      showMessage(m.settings_ui_language_save_failed(), 'error');
-      return;
-    }
-    document.cookie = `${localeCookieName}=${value}; path=/; SameSite=Lax; max-age=${localeCookieMaxAge}`;
-    location.reload();
-  });
 
   // Sync time_format_24h cookie from the server-rendered value on page load.
   const timeFormatToggle = document.getElementById('time-format-24h-toggle') as HTMLInputElement | null;
