@@ -1,4 +1,6 @@
 # ── Stage 1: Build frontend ───────────────────────────────────────────────────
+# Classic (non-buildx) builders do not set BUILDPLATFORM; buildx overrides this default.
+ARG BUILDPLATFORM=linux/amd64
 FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend-builder
 WORKDIR /app/frontend
 
