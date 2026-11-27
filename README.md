@@ -93,6 +93,7 @@ This is a fork of [ellite/scrob](https://github.com/ellite/scrob) that adds a so
 - **RPDB rating posters**: Optionally use RatingPosterDB movie and show posters with embedded ratings. Configure your own key and customize the artwork and rating sources through RPDB.
 - **Metadata language**: Set a preferred display language per profile - titles, overviews, and episode names show translated where available, independent of the rest of the UI's language.
 - **Search**: Search TMDB across movies, shows, people, and collections, merged with your local library data. The nav search box shows a live preview of the top movie and show matches as you type (typo-tolerant via TMDB), so you can jump straight to a result; press Enter for the full results page.
+- **Release year range filter**: In the Year filter on browse and collection pages, type a **From** and/or **To** year to select a whole time span at once (e.g. 1990–1999); individual years can still be toggled.
 - **Pick a Movie / Pick a Show**: Get a suggestion on what to watch next from your library or your streaming services based on your preferences.
 - **Trending & Airing Today**: Daily trending movies and shows from TMDB, plus episodes airing today filtered to your collection.
 - **Episode calendar**: A 15-day episode-by-episode schedule for shows you've collected or are watching.

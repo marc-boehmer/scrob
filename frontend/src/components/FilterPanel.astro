@@ -79,6 +79,14 @@ const activeCount = sections.reduce((sum, s) => sum + s.selected.length, 0);
               </svg>
             </button>
             <div data-role="accordion-content" class:list={["pb-2", { hidden: section.selected.length === 0 }]}>
+              {section.key === "year" && (
+                <div data-role="year-range" class="flex items-center gap-2 px-4 pt-1 pb-3 border-b border-zinc-800">
+                  <input type="number" inputmode="numeric" min="1800" max="2200" placeholder="From" aria-label="From year" data-role="year-from" class="w-full min-w-0 bg-zinc-800 border border-zinc-700 rounded-md px-2 py-1.5 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-blue-500" />
+                  <span class="text-zinc-500 text-sm">–</span>
+                  <input type="number" inputmode="numeric" min="1800" max="2200" placeholder="To" aria-label="To year" data-role="year-to" class="w-full min-w-0 bg-zinc-800 border border-zinc-700 rounded-md px-2 py-1.5 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-blue-500" />
+                </div>
+              )}
+              <div data-role="options">
               {section.dynamic ? (
                 <div class="px-4 py-3 text-sm text-zinc-500">Loading…</div>
               ) : (section.options ?? []).map((opt) => (
@@ -97,6 +105,7 @@ const activeCount = sections.reduce((sum, s) => sum + s.selected.length, 0);
                   </svg>
                 </label>
               ))}
+              </div>
             </div>
           </div>
         ))}
@@ -131,7 +140,7 @@ const activeCount = sections.reduce((sum, s) => sum + s.selected.length, 0);
     const sections = root.querySelectorAll<HTMLElement>("[data-dynamic-section]");
     for (const section of Array.from(sections)) {
       const endpoint = section.dataset.endpoint;
-      const content = section.querySelector('[data-role="accordion-content"]');
+      const content = section.querySelector('[data-role="options"]');
       if (!endpoint || !content) continue;
       const selected = new Set((section.dataset.selected || "").split(",").filter(Boolean));
       try {
@@ -225,6 +234,25 @@ const activeCount = sections.reduce((sum, s) => sum + s.selected.length, 0);
         if (key) params.append(key, cb.value);
       });
       window.location.href = `${basePath}?${params.toString()}`;
+    });
+
+    // Typing a From/To range checks every listed year inside it (either end
+    // may be left empty); the checked years are what Apply sends as `year`.
+    root.querySelectorAll<HTMLElement>('[data-role="year-range"]').forEach((range) => {
+      const fromInput = range.querySelector<HTMLInputElement>('[data-role="year-from"]');
+      const toInput = range.querySelector<HTMLInputElement>('[data-role="year-to"]');
+      const apply = () => {
+        const from = fromInput?.value ? Number(fromInput.value) : -Infinity;
+        const to = toInput?.value ? Number(toInput.value) : Infinity;
+        if (from === -Infinity && to === Infinity) return;
+        const boxes = range.parentElement?.querySelectorAll<HTMLInputElement>('input[data-filter-key="year"]') ?? [];
+        boxes.forEach((cb) => {
+          const y = Number(cb.value);
+          cb.checked = y >= from && y <= to;
+        });
+      };
+      fromInput?.addEventListener("input", apply);
+      toInput?.addEventListener("input", apply);
     });
 
     loadDynamicSections(root);
