@@ -123,6 +123,13 @@ html {
   scroll-padding-top: var(--nav-h, 0px);
 }
 
+/* Nav inputs already sit inside the pinned header. Reserving that same header
+   space while one is focused makes caret visibility scroll the page on every
+   keystroke. Keep the offset for content targets, but not for nav input focus. */
+html:has(nav.sticky input:focus) {
+  scroll-padding-top: 0;
+}
+
 body {
   /* No rubber-band bounce on the shell */
   overscroll-behavior: none;
@@ -383,6 +390,33 @@ html.blur-explicit [data-adult-backdrop="true"] img {
 .section-headline::before {
   content: '';
   @apply block w-1 h-6 bg-blue-600 rounded-full shrink-0;
+}
+
+/* Rating popover (#470): print each star's value under it so 6 vs 7 is
+   unambiguous. currentColor follows the star, so the numbers light up amber
+   with the filled stars and on hover. */
+#rating-stars {
+  padding-bottom: 18px;
+}
+
+#rating-stars > button[data-value] {
+  position: relative;
+  overflow: visible;
+}
+
+#rating-stars > button[data-value]::after {
+  content: attr(data-value);
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.9;
+  pointer-events: none;
+  user-select: none;
 }
 
 .group-label {

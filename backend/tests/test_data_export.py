@@ -145,11 +145,11 @@ class CollectionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ListsTests(unittest.IsolatedAsyncioTestCase):
-    async def test_watchlist_slug_is_separated_from_custom_lists(self) -> None:
-        watchlist = SimpleNamespace(id=1, name="Watchlist", trakt_slug="__watchlist__", mdblist_slug=None,
+    async def test_native_watchlist_is_separated_from_custom_lists(self) -> None:
+        watchlist = SimpleNamespace(id=1, name="Watchlist", trakt_slug=None, mdblist_slug=None, is_watchlist=True,
                                      description=None, privacy_level=PrivacyLevel.private,
                                      created_at=datetime(2026, 1, 1), updated_at=datetime(2026, 1, 1))
-        custom = SimpleNamespace(id=2, name="My Faves", trakt_slug=None, mdblist_slug=None,
+        custom = SimpleNamespace(id=2, name="My Faves", trakt_slug=None, mdblist_slug=None, is_watchlist=False,
                                   description="desc", privacy_level=PrivacyLevel.public,
                                   created_at=datetime(2026, 1, 1), updated_at=datetime(2026, 1, 1))
         item1 = SimpleNamespace(id=11, added_at=datetime(2026, 1, 1), notes=None)
@@ -181,6 +181,19 @@ class CommentsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(out["movies"]), 1)
         self.assertEqual(out["movies"][0]["comment"], "Great movie")
+
+    async def test_episode_comment_stored_as_series_goes_to_episodes_not_seasons(self) -> None:
+        # The UI posts season/episode comments as media_type "series" with the numbers set.
+        base = dict(created_at=datetime(2026, 1, 1), is_spoiler=False, media_type="series", tmdb_id=200)
+        season = SimpleNamespace(id=1, content="season note", season_number=1, episode_number=None, **base)
+        episode = SimpleNamespace(id=2, content="episode note", season_number=1, episode_number=3, **base)
+        db = _FakeSession([[season, episode], [_show()]])
+
+        out = await data_export.build_comments(db, user_id=1)
+
+        self.assertEqual([c["comment"] for c in out["seasons"]], ["season note"])
+        self.assertEqual([c["comment"] for c in out["episodes"]], ["episode note"])
+        self.assertEqual(out["episodes"][0]["episode"], {"season": 1, "number": 3})
 
 
 class SecretCategoryTests(unittest.IsolatedAsyncioTestCase):

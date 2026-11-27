@@ -29,10 +29,12 @@ from models.media import Media
 from models.ratings import Rating, RatingChanges
 from models.scrobble_connection import ScrobbleConnection
 from models.show import Show
+from core.native_watchlist import get_or_create_watchlist
 from core.rewatch import record_rewatch_progress
 from core.watch_dedup import get_dedup_window_minutes, is_duplicate_watch_time, load_existing_watch_times
 from models.sync import SyncJob
 from models.users import UserSettings
+from core.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +42,6 @@ MAX_ENTRY_SIZE = 100 * 1024 * 1024
 MAX_TOTAL_SIZE = 500 * 1024 * 1024
 _READ_CHUNK_SIZE = 1024 * 1024
 
-WATCHLIST_SLUG = "__watchlist__"
 
 # Same third-party credential/preference fields as core/data_export.py's
 # _CONNECTIONS_SETTINGS_FIELDS — kept in sync manually since importing one
@@ -317,8 +318,8 @@ async def apply_scrob_import(
                             continue
                         watched_at = _parse_iso(entry.get("watched_at"))
                         if not _is_duplicate_play(media.id, watched_at):
-                            db.add(WatchEvent(user_id=user_id, media_id=media.id, watched_at=watched_at, completed=True, play_count=1))
-                            existing_times.setdefault(media.id, []).append(watched_at or datetime.utcnow())
+                            db.add(WatchEvent(user_id=user_id, media_id=media.id, watched_at=watched_at, completed=True, play_count=1, source="import"))
+                            existing_times.setdefault(media.id, []).append(watched_at or utcnow())
                             stats["movies"] += 1
                         else:
                             stats["skipped"] += 1
@@ -356,11 +357,11 @@ async def apply_scrob_import(
                             continue
                         watched_at = _parse_iso(entry.get("watched_at"))
                         if not _is_duplicate_play(media.id, watched_at):
-                            event = WatchEvent(user_id=user_id, media_id=media.id, watched_at=watched_at, completed=True, play_count=1)
+                            event = WatchEvent(user_id=user_id, media_id=media.id, watched_at=watched_at, completed=True, play_count=1, source="import")
                             db.add(event)
                             await db.flush()
                             await record_rewatch_progress(db, user_id, media.id, event.id)
-                            existing_times.setdefault(media.id, []).append(watched_at or datetime.utcnow())
+                            existing_times.setdefault(media.id, []).append(watched_at or utcnow())
                             stats["episodes"] += 1
                         else:
                             stats["skipped"] += 1
@@ -534,13 +535,7 @@ async def apply_scrob_import(
                     return await _get_or_create_series_media(db, tmdb_id, entry.get("show", {}).get("title", ""), api_key)
             return None
 
-        wl_result = await db.execute(select(ListModel).where(ListModel.user_id == user_id, ListModel.trakt_slug == WATCHLIST_SLUG))
-        watchlist = wl_result.scalar_one_or_none()
-        if not watchlist and data.watchlist:
-            watchlist = ListModel(user_id=user_id, name="Watchlist", trakt_slug=WATCHLIST_SLUG)
-            db.add(watchlist)
-            await db.flush()
-            stats["lists"] += 1
+        watchlist = await get_or_create_watchlist(db, user_id) if data.watchlist else None
 
         if watchlist:
             wl_items_result = await db.execute(select(ListItem.media_id).where(ListItem.list_id == watchlist.id))
@@ -621,7 +616,7 @@ async def apply_scrob_import(
                 # a malformed created_at here (plausible from a hand-edited or
                 # third-party CSV, unlike Trakt's own well-formed dates) must
                 # only drop this one comment, not abort the whole import.
-                created_at = _parse_iso(entry.get("created_at")) or datetime.utcnow()
+                created_at = _parse_iso(entry.get("created_at")) or utcnow()
             except ValueError:
                 logger.exception("Error importing comment (media_type=%s tmdb_id=%s)", media_type, tmdb_id)
                 stats["errors"] += 1
@@ -646,7 +641,9 @@ async def apply_scrob_import(
             await _tick()
         for entry in data.comments.get("episodes", []):
             ep = entry.get("episode", {})
-            _add_comment("episode", entry.get("ids", {}).get("tmdb"), ep.get("season"), ep.get("number"), entry)
+            tmdb_id = entry.get("ids", {}).get("tmdb") or entry.get("show", {}).get("ids", {}).get("tmdb")
+            # "series", not "episode": that's how the episode page stores and reads them.
+            _add_comment("series", tmdb_id, ep.get("season"), ep.get("number"), entry)
             await _tick()
         await db.commit()
 

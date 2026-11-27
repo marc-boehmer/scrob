@@ -41,6 +41,7 @@ from routers.webhooks import (
     parse_kodi_payload,
     parse_plex_payload,
 )
+from core.timeutil import utcnow
 
 
 class _Scalars:
@@ -117,6 +118,14 @@ class WriteWatchEventDedupTests(IsolatedAsyncioTestCase):
         result = await _write_watch_event(db, user_id=1, media_id=2, progress_percent=1.0, progress_seconds=120, completed=True)
         self.assertEqual(len(db.added), 1)
         self.assertTrue(result)
+
+    async def test_completed_event_records_where_it_came_from(self):
+        # #477: the history view shows which service a watch was recorded from.
+        db = _FakeDB(queued_scalars=[None])
+        await _write_watch_event(
+            db, user_id=1, media_id=2, progress_percent=1.0, progress_seconds=120, completed=True, source="plex",
+        )
+        self.assertEqual(db.added[0].source, "plex")
 
     async def test_second_completed_event_for_same_media_within_window_is_skipped(self):
         # Simulates media.scrobble having already written a WatchEvent moments
@@ -598,7 +607,7 @@ class ConsumeRecentlyPushedWatchedTests(unittest.TestCase):
     def test_expired_marker_is_not_consumed(self):
         import datetime
         mark_pushed_watched(user_id=1, media_id=2)
-        webhooks._recently_pushed_watched[(1, 2)][0] = datetime.datetime.utcnow() - webhooks._PUSHED_WATCHED_TTL - datetime.timedelta(seconds=1)
+        webhooks._recently_pushed_watched[(1, 2)][0] = utcnow() - webhooks._PUSHED_WATCHED_TTL - datetime.timedelta(seconds=1)
         self.assertFalse(_consume_recently_pushed_watched(user_id=1, media_id=2))
 
     def test_two_pending_pushes_each_consume_their_own_echo(self):
@@ -2186,6 +2195,35 @@ class FindOrCreateMediaKodiShowIdTests(IsolatedAsyncioTestCase):
 
         self.assertIs(result, existing)
         create_mock.assert_not_awaited()
+
+
+class FindOrCreateMediaKodiMovieTests(IsolatedAsyncioTestCase):
+    """#537: a Kodi movie payload with a TMDB id must not fall back to a title
+    search when the movie is new - the first hit can be a different film that
+    shares the title (Evolution 2001 vs 2026)."""
+
+    def _data(self, **overrides):
+        data = {"media_type": "movie", "title": "Evolution", "year": 2026, "tmdb_id": "1234567"}
+        data.update(overrides)
+        return data
+
+    async def test_new_movie_with_tmdb_id_is_created_under_that_id(self):
+        created = SimpleNamespace(id=9, media_type=MediaType.movie)
+        db = _QueuedResultDB([None])
+        with patch("routers.webhooks.tmdb.search_movies", AsyncMock()) as search, \
+             patch("routers.webhooks.enrich_media", AsyncMock()), \
+             patch("routers.webhooks.create_media_safely",
+                   AsyncMock(return_value=(created, True))) as create_mock:
+            result = await find_or_create_media_kodi(self._data(), db)
+        self.assertIs(result, created)
+        search.assert_not_awaited()
+        self.assertEqual(create_mock.await_args.args[1], 1234567)
+
+    async def test_movie_without_tmdb_id_still_uses_title_search(self):
+        found = SimpleNamespace(id=3, media_type=MediaType.movie)
+        db = _QueuedResultDB([found])
+        result = await find_or_create_media_kodi(self._data(tmdb_id=None), db)
+        self.assertIs(result, found)
 
 
 if __name__ == "__main__":

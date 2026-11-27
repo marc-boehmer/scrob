@@ -10,12 +10,20 @@ import httpx
 from fastapi import FastAPI, HTTPException, Response
 from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.pool import StaticPool
 
+
+@compiles(JSONB, "sqlite")
+def _jsonb_as_json_on_sqlite(type_, compiler, **kw):
+    return "JSON"
+
+
+import schemas
 from db import get_db
 from dependencies import require_admin
 from routers import admin
-import schemas
 
 
 class _Result:
@@ -149,6 +157,81 @@ class AdminGlobalApiKeyConnectionTestTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(raised.exception.status_code, 400)
         self.assertEqual(raised.exception.detail, "Failed to connect to MDBList")
+class _GlobalSettingsDB:
+    """AsyncSession stand-in for update_global_settings: every lookup returns
+    the same GlobalSettings row."""
+
+    def __init__(self, gs):
+        self.gs = gs
+        self.committed = False
+
+    async def execute(self, _stmt):
+        return _Result(self.gs)
+
+    def add(self, obj):
+        pass
+
+    async def flush(self):
+        pass
+
+    async def commit(self):
+        self.committed = True
+
+    async def refresh(self, obj):
+        pass
+
+
+class AdminDefaultEpisodeOrderTests(unittest.IsolatedAsyncioTestCase):
+    """The server-wide episode order is the fallback for users who picked
+    none, so it is validated the same way the per-user and per-show switches
+    are - an unusable value must not be storable."""
+
+    async def _patch(self, gs, **fields):
+        db = _GlobalSettingsDB(gs)
+        result = await admin.update_global_settings(
+            body=schemas.GlobalSettings(**fields), db=db, _=SimpleNamespace(id=1, is_admin=True),
+        )
+        return result, db
+
+    async def test_tvdb_is_stored_normalised_when_a_server_key_exists(self):
+        gs = SimpleNamespace(default_episode_order=None, tvdb_api_key="key")
+        _, db = await self._patch(gs, default_episode_order="tvdb")
+        # Stored as an order key, not the legacy spelling, so every reader can
+        # compare it the same way.
+        self.assertEqual(gs.default_episode_order, "tvdb:official")
+        self.assertTrue(db.committed)
+
+    async def test_tvdb_without_any_key_is_rejected(self):
+        gs = SimpleNamespace(default_episode_order=None, tvdb_api_key=None)
+        with self.assertRaises(HTTPException) as ctx:
+            await self._patch(gs, default_episode_order="tvdb")
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIsNone(gs.default_episode_order)
+
+    async def test_a_key_saved_in_the_same_request_counts(self):
+        gs = SimpleNamespace(default_episode_order=None, tvdb_api_key=None)
+        await self._patch(gs, default_episode_order="tvdb", tvdb_api_key="key")
+        self.assertEqual(gs.default_episode_order, "tvdb:official")
+
+    async def test_a_show_specific_tmdb_group_is_rejected_as_a_default(self):
+        # A valid per-show order key, but a group id belongs to exactly one
+        # show - as a server-wide default it would do nothing for every other.
+        gs = SimpleNamespace(default_episode_order=None, tvdb_api_key="key")
+        with self.assertRaises(HTTPException) as ctx:
+            await self._patch(gs, default_episode_order="tmdb:group:5f8a")
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIsNone(gs.default_episode_order)
+
+    async def test_an_unknown_order_is_rejected(self):
+        gs = SimpleNamespace(default_episode_order=None, tvdb_api_key="key")
+        with self.assertRaises(HTTPException) as ctx:
+            await self._patch(gs, default_episode_order="imdb")
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_aired_order_needs_no_key(self):
+        gs = SimpleNamespace(default_episode_order="tvdb:official", tvdb_api_key=None)
+        await self._patch(gs, default_episode_order="tmdb")
+        self.assertEqual(gs.default_episode_order, "tmdb:aired")
 
 
 class AdminCreateUserTests(unittest.IsolatedAsyncioTestCase):
@@ -297,7 +380,6 @@ class AdminCreateUserTests(unittest.IsolatedAsyncioTestCase):
             db.add(user)
             await db.flush()
             db.add_all([
-                self.UserSettings(user_id=user.id),
                 self.TotpBackupCode(user_id=user.id, code="backup-code"),
                 self.EmailActivation(user_id=user.id, email=user.email, token="activation-token"),
                 self.PasswordResetToken(user_id=user.id, token="reset-token"),
@@ -310,7 +392,6 @@ class AdminCreateUserTests(unittest.IsolatedAsyncioTestCase):
         async with self.Session() as db:
             self.assertIsNone(await db.get(self.User, 2))
             for model in (
-                self.UserSettings,
                 self.TotpBackupCode,
                 self.EmailActivation,
                 self.PasswordResetToken,

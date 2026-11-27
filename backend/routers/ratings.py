@@ -26,6 +26,7 @@ from models.global_settings import GlobalSettings
 from core.enrichment import enrich_media, create_media_safely
 from core.identity import find_media, coerce_id
 from core.episode_order import validate_episode_order, normalize_order_key, is_aired_order
+from core.timeutil import utcnow
 
 router = APIRouter()
 
@@ -168,7 +169,7 @@ async def submit_rating(
     if rating:
         rating.rating = body.rating
         rating.review = body.review
-        rating.rated_at = datetime.utcnow()
+        rating.rated_at = utcnow()
     else:
         rating = Rating(
             media_id=media.id,

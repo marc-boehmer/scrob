@@ -5,6 +5,11 @@ from datetime import datetime
 from typing import Optional, List, Dict
 
 TIMEOUT = httpx.Timeout(120.0)  # 120 second timeout
+# A page of a large library can take Jellyfin longer than the timeout to build
+# (episodes with MediaStreams especially), and one lost page used to fail the
+# whole pull (#533). Pages are kept small and a timed-out page is retried.
+PAGE_SIZE = 100
+TIMEOUT_RETRIES = 2
 
 _TMDB_PROVIDER_PATH_RE = re.compile(r"/(?:movie|tv)/(\d+)")
 
@@ -41,12 +46,18 @@ def _auth_headers(token: str) -> Dict[str, str]:
 
 
 async def _get(url: str, token: str, path: str, params: Optional[Dict] = None) -> Dict:
-    async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False) as client:
-        headers = _auth_headers(token)
-        full_url = f"{url.rstrip('/')}/{path.lstrip('/')}"
-        r = await client.get(full_url, headers=headers, params=params)
-        r.raise_for_status()
-        return r.json()
+    headers = _auth_headers(token)
+    full_url = f"{url.rstrip('/')}/{path.lstrip('/')}"
+    for attempt in range(TIMEOUT_RETRIES + 1):
+        try:
+            async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False) as client:
+                r = await client.get(full_url, headers=headers, params=params)
+            r.raise_for_status()
+            return r.json()
+        except httpx.TimeoutException:
+            if attempt == TIMEOUT_RETRIES:
+                raise
+            await asyncio.sleep(2 * (attempt + 1))
 
 async def get_item(url: str, token: str, item_id: str, user_id: Optional[str] = None) -> Optional[Dict]:
     """Fetch full metadata for a single item by ID, including MediaStreams."""
@@ -160,7 +171,7 @@ async def get_libraries(url: str, token: str, user_id: str) -> list:
 async def get_movies(library_id: str, url: str, token: str, user_id: str) -> list:
     all_items = []
     start = 0
-    page_size = 500
+    page_size = PAGE_SIZE
 
     while True:
         data = await _get(url, token, f"Users/{user_id}/Items", params={
@@ -184,7 +195,7 @@ async def get_movies(library_id: str, url: str, token: str, user_id: str) -> lis
 async def get_shows(library_id: str, url: str, token: str, user_id: str) -> list:
     all_items = []
     start = 0
-    page_size = 500
+    page_size = PAGE_SIZE
 
     while True:
         data = await _get(url, token, f"Users/{user_id}/Items", params={
@@ -208,7 +219,7 @@ async def get_shows(library_id: str, url: str, token: str, user_id: str) -> list
 async def get_episodes(library_id: str, url: str, token: str, user_id: str) -> list:
     all_items = []
     start = 0
-    page_size = 500
+    page_size = PAGE_SIZE
 
     while True:
         data = await _get(url, token, f"Users/{user_id}/Items", params={
@@ -488,17 +499,42 @@ async def scan_libraries(url: str, token: str) -> bool:
 
 PUSH_TIMEOUT = httpx.Timeout(15.0)  # shorter timeout for bulk push operations
 
-async def mark_watched(url: str, token: str, user_id: str, item_id: str, client: httpx.AsyncClient | None = None, played_at: datetime | None = None) -> bool:
-    """Mark a Jellyfin/Emby item as played, optionally stamped with the original watch date (naive UTC)."""
+# Jellyfin takes an ISO 8601 DatePlayed; Emby 4.x answers a 500 ("String ... was
+# not recognized as a valid DateTime") to that and only parses yyyyMMddHHmmss (#530).
+JELLYFIN_DATE_PLAYED_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+EMBY_DATE_PLAYED_FORMAT = "%Y%m%d%H%M%S"
+
+
+async def mark_watched(
+    url: str,
+    token: str,
+    user_id: str,
+    item_id: str,
+    client: httpx.AsyncClient | None = None,
+    played_at: datetime | None = None,
+    date_format: str = JELLYFIN_DATE_PLAYED_FORMAT,
+) -> bool:
+    """Mark a Jellyfin/Emby item as played, optionally stamped with the original watch date (naive UTC).
+
+    If the server refuses the dated request (a version that parses DatePlayed
+    differently) the item is marked played once more without a date: a watch
+    with the wrong date beats a watch that never reaches the server (#530)."""
     headers = _auth_headers(token)
-    params = {"DatePlayed": played_at.strftime("%Y-%m-%dT%H:%M:%SZ")} if played_at else None
+    endpoint = f"{url.rstrip('/')}/Users/{user_id}/PlayedItems/{item_id}"
+
+    async def _post(c: httpx.AsyncClient) -> bool:
+        if played_at:
+            r = await c.post(endpoint, headers=headers, params={"DatePlayed": played_at.strftime(date_format)})
+            if r.status_code < 400:
+                return True
+        r = await c.post(endpoint, headers=headers)
+        return r.status_code < 400
+
     try:
         if client:
-            r = await client.post(f"{url.rstrip('/')}/Users/{user_id}/PlayedItems/{item_id}", headers=headers, params=params)
-            return r.status_code < 400
+            return await _post(client)
         async with httpx.AsyncClient(timeout=PUSH_TIMEOUT, follow_redirects=False) as c:
-            r = await c.post(f"{url.rstrip('/')}/Users/{user_id}/PlayedItems/{item_id}", headers=headers, params=params)
-            return r.status_code < 400
+            return await _post(c)
     except Exception:
         return False
 

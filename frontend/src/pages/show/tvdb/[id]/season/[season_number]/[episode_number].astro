@@ -1,7 +1,11 @@
 ---
+import { getViewerTimeZone } from "../../../../../../lib/viewerTimeZone";
 import Base from "../../../../../../layouts/Base.astro";
-import ActionBar from "../../../../../../components/ActionBar.astro";
 import FriendsRatingsSection from "../../../../../../components/FriendsRatingsSection.astro";
+import { formatDate } from "../../../../../../lib/format";
+import { m } from "../../../../../../paraglide/messages.js";
+import ActionBar from "../../../../../../components/ActionBar.astro";
+import WatchStats from "../../../../../../components/WatchStats.astro";
 import CommentsSection from "../../../../../../components/CommentsSection.astro";
 import TraktCommentsSection from "../../../../../../components/TraktCommentsSection.astro";
 import CastCrewSection from "../../../../../../components/CastCrewSection.astro";
@@ -25,9 +29,13 @@ try {
 }
 
 // #174: TMDB-matched shows render on /show/{tmdb_id} with the TVDB aired order.
-if (episode?.show?.tmdb_id) {
+// Only when the episode has a TMDB counterpart (#581): a TVDB-only episode
+// would 404 on the TMDB route, so it renders here instead.
+if (episode?.show?.tmdb_id && episode?.tmdb_id) {
+  const tmdbSeason = episode.tmdb_season_number ?? season_number;
+  const tmdbEpisode = episode.tmdb_episode_number ?? episode_number;
   return Astro.redirect(
-    `/show/${episode.show.tmdb_id}/season/${season_number}/${episode_number}`, 301,
+    `/show/${episode.show.tmdb_id}/season/${tmdbSeason}/${tmdbEpisode}`, 301,
   );
 }
 
@@ -40,14 +48,14 @@ const season = episode?.season;
 const thumbnail = episode?.image_url || show?.poster_path || null;
 ---
 
-<Base title={episode ? `${show?.title} - ${episode.name ?? `Episode ${episode_number}`}` : "Episode Details"}>
+<Base title={episode ? m.page_title_pair({ parent: show?.title ?? "", child: episode.name ?? m.media_episode_number({ number: episode_number! }) }) : m.episode_details_title()}>
   {error && !episode && (
     <div class="max-w-md mx-auto mt-20 text-center">
       <div class="bg-red-500/10 border border-red-500/20 text-red-500 p-6 rounded-2xl mb-6">
-        <p class="font-bold text-lg mb-2">Oops!</p>
+        <p class="font-bold text-lg mb-2">{m.common_oops()}</p>
         <p class="text-sm opacity-80">{error}</p>
       </div>
-      <a href="/" class="text-blue-500 hover:underline">Return to Dashboard</a>
+      <a href="/" class="text-blue-500 hover:underline">{m.common_return_to_dashboard()}</a>
     </div>
   )}
 
@@ -62,13 +70,13 @@ const thumbnail = episode?.image_url || show?.poster_path || null;
 
       <div class="relative z-20">
         <nav class="flex items-center gap-2 text-sm text-zinc-400 mb-8 overflow-hidden whitespace-nowrap">
-          <a href="/shows" class="hover:text-zinc-100 transition shrink-0">Shows</a>
+          <a href="/shows" class="hover:text-zinc-100 transition shrink-0">{m.common_shows()}</a>
           <span class="text-zinc-700">/</span>
           <a href={`/show/tvdb/${id}`} class="hover:text-zinc-100 transition truncate">{show?.title}</a>
           <span class="text-zinc-700 shrink-0">/</span>
-          <a href={`/show/tvdb/${id}/season/${season_number}`} class="hover:text-zinc-100 transition shrink-0">{season?.name ?? `Season ${season_number}`}</a>
+          <a href={`/show/tvdb/${id}/season/${season_number}`} class="hover:text-zinc-100 transition shrink-0">{season?.name ?? m.media_season_number({ number: season_number! })}</a>
           <span class="text-zinc-700 shrink-0">/</span>
-          <span class="text-zinc-100 font-bold shrink-0">Episode {episode_number}</span>
+          <span class="text-zinc-100 font-bold shrink-0">{m.media_episode_number({ number: episode_number })}</span>
         </nav>
 
         <div class="flex flex-col md:flex-row gap-8 lg:gap-12 mb-16">
@@ -76,7 +84,7 @@ const thumbnail = episode?.image_url || show?.poster_path || null;
           <div class="w-full md:w-80 shrink-0">
             <div class="aspect-video rounded-2xl overflow-hidden shadow-2xl border border-zinc-800 bg-zinc-900 ring-1 ring-white/10 relative">
               {thumbnail ? (
-                <button id="poster-zoom-btn" class="w-full h-full group/poster block cursor-zoom-in" aria-label={`Enlarge thumbnail`}>
+                <button id="poster-zoom-btn" class="w-full h-full group/poster block cursor-zoom-in" aria-label={m.episode_enlarge_thumbnail()}>
                   <img
                     src={thumbnail}
                     alt={episode.name ?? ""}
@@ -93,7 +101,7 @@ const thumbnail = episode?.image_url || show?.poster_path || null;
               ) : (
                 <div class="w-full h-full flex flex-col items-center justify-center text-zinc-400 p-4 text-center">
                   <svg xmlns="http://www.w3.org/2000/svg" width="30%" height="30%" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="mb-2"><rect width="20" height="15" x="2" y="7" rx="2"/><polyline points="17 2 12 7 7 2"/></svg>
-                  <span class="text-sm font-medium">No Thumbnail</span>
+                  <span class="text-sm font-medium">{m.episode_no_thumbnail()}</span>
                 </div>
               )}
             </div>
@@ -103,54 +111,55 @@ const thumbnail = episode?.image_url || show?.poster_path || null;
           <div class="flex-1 min-w-0 pt-2">
             <div class="flex flex-col xl:flex-row xl:items-start justify-between gap-6 mb-4">
               <div class="flex-1 min-w-0">
-                <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-4 mb-2">
-                  <div class="min-w-0">
-                    <h1 class="text-3xl md:text-5xl font-black text-zinc-100 mb-2 tracking-tight leading-tight">
-                      {episode.name ?? `Episode ${episode_number}`}
-                    </h1>
-                    <div class="flex flex-wrap items-center gap-3">
-                      <p class="text-lg text-blue-400 font-bold tracking-wide uppercase">{show?.title}</p>
-                      <span class="px-3 py-1 bg-blue-600/20 border border-blue-600/30 text-blue-400 text-[10px] font-black rounded-full uppercase tracking-widest">
-                        S{String(season_number).padStart(2, "0")}E{String(episode_number).padStart(2, "0")}
-                      </span>
-                    </div>
-                  </div>
-
-                  {episode.episodes && episode.episodes.length > 1 && (
-                    <div class="flex items-center gap-2 shrink-0">
-                      {(() => {
-                        const currentEp = Number(episode_number);
-                        const sorted = [...episode.episodes].sort((a, b) => a.episode_number - b.episode_number);
-                        const idx = sorted.findIndex((e) => e.episode_number === currentEp);
-                        const prev = idx > 0 ? sorted[idx - 1] : null;
-                        const next = idx < sorted.length - 1 ? sorted[idx + 1] : null;
-                        return (
-                          <>
-                            {prev && (
-                              <a href={`/show/tvdb/${id}/season/${season_number}/${prev.episode_number}`} class="flex items-center gap-1.5 px-3 py-2 bg-zinc-900/60 border border-zinc-800/50 rounded-xl text-zinc-400 hover:text-zinc-100 hover:border-blue-500/50 hover:bg-zinc-800/60 active:scale-95 active:opacity-70 transition-all text-sm font-bold">
-                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-4 h-4">
-                                  <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12 15.75 4.5" />
-                                </svg>
-                                <span class="hidden sm:inline">E{prev.episode_number}</span>
-                              </a>
-                            )}
-                            <span class="px-3 py-2 bg-blue-600/20 border border-blue-500/30 rounded-xl text-blue-400 text-sm font-black">
-                              E{currentEp}
-                            </span>
-                            {next && (
-                              <a href={`/show/tvdb/${id}/season/${season_number}/${next.episode_number}`} class="flex items-center gap-1.5 px-3 py-2 bg-zinc-900/60 border border-zinc-800/50 rounded-xl text-zinc-400 hover:text-zinc-100 hover:border-blue-500/50 hover:bg-zinc-800/60 active:scale-95 active:opacity-70 transition-all text-sm font-bold">
-                                <span class="hidden sm:inline">E{next.episode_number}</span>
-                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-4 h-4">
-                                  <path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
-                                </svg>
-                              </a>
-                            )}
-                          </>
-                        );
-                      })()}
-                    </div>
-                  )}
+            <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-4 mb-2">
+              <div class="min-w-0">
+                <h1 class="text-3xl md:text-5xl font-black text-zinc-100 mb-2 tracking-tight leading-tight">
+                  {episode.name ?? m.media_episode_number({ number: episode_number! })}
+                </h1>
+                <div class="flex flex-wrap items-center gap-3">
+                  <p class="text-lg text-blue-400 font-bold tracking-wide uppercase">{show?.title}</p>
+                  <span class="px-3 py-1 bg-blue-600/20 border border-blue-600/30 text-blue-400 text-[10px] font-black rounded-full uppercase tracking-widest">
+                    S{String(season_number).padStart(2, "0")}E{String(episode_number).padStart(2, "0")}
+                  </span>
                 </div>
+              </div>
+
+              {episode.episodes && episode.episodes.length > 1 && (
+                <div class="flex items-center gap-2 shrink-0">
+                  {(() => {
+                    const currentEp = Number(episode_number);
+                    const sorted = [...episode.episodes].sort((a, b) => a.episode_number - b.episode_number);
+                    const idx = sorted.findIndex((e) => e.episode_number === currentEp);
+                    const prev = idx > 0 ? sorted[idx - 1] : null;
+                    const next = idx < sorted.length - 1 ? sorted[idx + 1] : null;
+                    return (
+                      <>
+                        {prev && (
+                          <a href={`/show/tvdb/${id}/season/${season_number}/${prev.episode_number}`} class="flex items-center gap-1.5 px-3 py-2 bg-zinc-900/60 border border-zinc-800/50 rounded-xl text-zinc-400 hover:text-zinc-100 hover:border-blue-500/50 hover:bg-zinc-800/60 active:scale-95 active:opacity-70 transition-all text-sm font-bold">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-4 h-4">
+                              <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12 15.75 4.5" />
+                            </svg>
+                            <span class="hidden sm:inline">E{prev.episode_number}</span>
+                          </a>
+                        )}
+                        <span class="px-3 py-2 bg-blue-600/20 border border-blue-500/30 rounded-xl text-blue-400 text-sm font-black">
+                          E{currentEp}
+                        </span>
+                        {next && (
+                          <a href={`/show/tvdb/${id}/season/${season_number}/${next.episode_number}`} class="flex items-center gap-1.5 px-3 py-2 bg-zinc-900/60 border border-zinc-800/50 rounded-xl text-zinc-400 hover:text-zinc-100 hover:border-blue-500/50 hover:bg-zinc-800/60 active:scale-95 active:opacity-70 transition-all text-sm font-bold">
+                            <span class="hidden sm:inline">E{next.episode_number}</span>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-4 h-4">
+                              <path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+                            </svg>
+                          </a>
+                        )}
+                      </>
+                    );
+                  })()}
+                </div>
+              )}
+            </div>
+
               </div>
 
               <FriendsRatingsSection
@@ -164,7 +173,7 @@ const thumbnail = episode?.image_url || show?.poster_path || null;
             <div class="flex flex-wrap items-center gap-4 text-zinc-300 text-sm mb-8 bg-zinc-900/40 p-3 rounded-xl border border-zinc-800/50 backdrop-blur-sm inline-flex">
               {episode.air_date && (
                 <span class="font-bold">
-                  {new Date(episode.air_date).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })}
+                  {formatDate(episode.air_date, { year: "numeric", month: "long", day: "numeric" })}
                 </span>
               )}
               {episode.runtime && (
@@ -172,16 +181,16 @@ const thumbnail = episode?.image_url || show?.poster_path || null;
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-4 h-4 text-zinc-500">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
                   </svg>
-                  {episode.runtime} min
+                  {m.media_runtime_minutes({ minutes: episode.runtime })}
                 </span>
               )}
             </div>
 
             {user && (episode.unmatched ? (
               <div class="mb-4 p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl text-sm">
-                <p class="font-bold text-amber-200 mb-1">Not tracked yet</p>
+                <p class="font-bold text-amber-200 mb-1">{m.tvdb_episode_not_tracked_title()}</p>
                 <p class="text-zinc-300 opacity-90">
-                  This episode might exist on TMDB too, but hasn't been matched to its TVDB position yet, so it can't be marked watched, rated, or collected. Try "Refresh Episode Matching" below.
+                  {m.tvdb_episode_not_tracked_body()}
                 </p>
               </div>
             ) : (
@@ -203,12 +212,14 @@ const thumbnail = episode?.image_url || show?.poster_path || null;
                   hideRequest={true}
                   userRating={episode.user_rating}
                   ratingTitle={show?.title}
-                  ratingSubtitle={episode.name ?? `Episode ${episode_number}`}
+                  ratingSubtitle={episode.name ?? m.media_episode_number({ number: episode_number! })}
                   ratingPosterPath={episode.image_url || season?.poster_path || show?.poster_path}
                   airDate={episode.air_date}
                 />
               </div>
             ))}
+
+            {user && !episode.unmatched && <WatchStats plays={episode.play_count} watchTimeMinutes={episode.watch_time_minutes} lastWatchedAt={episode.last_watched_at} timeZone={getViewerTimeZone(Astro.cookies)} />}
 
             {user && !episode.unmatched && (
               <ManualScrobble
@@ -216,7 +227,7 @@ const thumbnail = episode?.image_url || show?.poster_path || null;
                 mediaId={episode.id}
                 mediaType="episode"
                 runtime={episode.runtime}
-                title={episode.name ?? `Episode ${episode_number}`}
+                title={episode.name ?? m.media_episode_number({ number: episode_number! })}
                 showTmdbId={episode.show_tmdb_id ?? episode.show.tmdb_id ?? undefined}
                 seasonNumber={episode.tmdb_season_number}
                 episodeNumber={episode.tmdb_episode_number}
@@ -226,11 +237,6 @@ const thumbnail = episode?.image_url || show?.poster_path || null;
             <!-- Library info -->
             {episode.library && (
               <div class="mb-4 flex flex-wrap gap-2">
-                {!!episode.play_count && (
-                  <span class="inline-flex items-center px-3 py-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 text-xs rounded-lg font-bold">
-                    {episode.play_count} {episode.play_count === 1 ? 'Play' : 'Plays'}
-                  </span>
-                )}
                 {[
                   episode.library.resolution,
                   episode.library.video_codec,
@@ -258,6 +264,7 @@ const thumbnail = episode?.image_url || show?.poster_path || null;
               <div class="mb-8 flex flex-wrap gap-3 items-start">
                 <button
                   id="refresh-metadata-btn"
+                  data-tvdb-id={id}
                   class="flex items-center gap-2 px-4 py-2 text-sm font-bold leading-none text-zinc-300 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors cursor-pointer"
                 >
                   <svg id="refresh-icon" xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -266,7 +273,7 @@ const thumbnail = episode?.image_url || show?.poster_path || null;
                     <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
                     <path d="M8 16H3v5"/>
                   </svg>
-                  <span id="refresh-label">{episode.unmatched ? "Refresh Episode Matching" : "Refresh Metadata"}</span>
+                  <span id="refresh-label">{episode.unmatched ? m.tvdb_refresh_episode_matching() : m.media_refresh_metadata()}</span>
                 </button>
                 {episode.in_library && (
                   <VideoPlayer
@@ -274,7 +281,7 @@ const thumbnail = episode?.image_url || show?.poster_path || null;
                     mediaId={episode.id}
                     mediaType="episode"
                     inLibrary={episode.in_library}
-                    title={`${show?.title} - ${episode.name ?? `Episode ${episode_number}`}`}
+                    title={`${show?.title} - ${episode.name ?? m.media_episode_number({ number: episode_number! })}`}
                     token={token}
                     secondary
                   />
@@ -286,7 +293,7 @@ const thumbnail = episode?.image_url || show?.poster_path || null;
               <div>
                 <h2 class="text-xl font-black text-zinc-100 mb-4 flex items-center gap-2 uppercase tracking-tight">
                   <span class="w-2 h-2 bg-blue-500 rounded-full"></span>
-                  Overview
+                  {m.common_overview()}
                 </h2>
                 <p class="text-zinc-300 leading-relaxed text-lg max-w-3xl font-medium opacity-90">
                   {episode.overview}
@@ -320,7 +327,11 @@ const thumbnail = episode?.image_url || show?.poster_path || null;
   )}
 </Base>
 
-<script define:vars={{ tvdbId: id, token: Astro.locals.token }}>
+<script>
+  import { m } from '../../../../../../paraglide/messages.js';
+
+  const token = (window as any).__AUTH_TOKEN__ ?? '';
+  const tvdbId = document.getElementById('refresh-metadata-btn')?.dataset.tvdbId ?? '';
   const btn = document.getElementById('refresh-metadata-btn');
   if (btn) {
     btn.addEventListener('click', async () => {
@@ -331,7 +342,7 @@ const thumbnail = episode?.image_url || show?.poster_path || null;
       btn.setAttribute('disabled', 'true');
       btn.classList.add('opacity-60', 'cursor-not-allowed');
       icon.classList.add('animate-spin');
-      label.textContent = 'Refreshing...';
+      label.textContent = m.media_refreshing();
 
       try {
         const res = await fetch(`/api/proxy/shows/tvdb/${tvdbId}/refresh`, {
@@ -340,17 +351,17 @@ const thumbnail = episode?.image_url || show?.poster_path || null;
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          throw new Error(data.detail || 'Refresh failed');
+          throw new Error(data.detail || m.media_refresh_failed());
         }
-        label.textContent = 'Done!';
+        label.textContent = m.common_done();
         icon.classList.remove('animate-spin');
         setTimeout(() => { window.location.reload(); }, 800);
       } catch (err) {
         icon.classList.remove('animate-spin');
-        label.textContent = 'Refresh failed';
+        label.textContent = m.media_refresh_failed();
         btn.removeAttribute('disabled');
         btn.classList.remove('opacity-60', 'cursor-not-allowed');
-        setTimeout(() => { label.textContent = 'Refresh Metadata'; }, 3000);
+        setTimeout(() => { label.textContent = m.media_refresh_metadata(); }, 3000);
       }
     });
   }
@@ -367,7 +378,7 @@ const thumbnail = episode?.image_url || show?.poster_path || null;
     <button
       id="poster-modal-close"
       class="absolute top-4 right-4 p-2 rounded-full bg-black/60 hover:bg-black/80 text-white/70 hover:text-white transition-all duration-200 cursor-pointer"
-      aria-label="Close"
+      aria-label={m.common_close()}
     >
       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-5 h-5">
         <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import time
 import httpx
 from core.config import settings
@@ -8,7 +9,12 @@ TMDB_BASE_V4 = "https://api.themoviedb.org/4"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p"
 
 # Errors that are worth retrying (transient). 404/4xx are permanent — don't retry.
-_RETRYABLE = (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError)
+# ReadError/WriteError cover a kept-alive connection that went stale (reset by
+# TMDB's edge or a NAT/proxy in between): the retry opens a fresh one.
+_RETRYABLE = (
+    httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError,
+    httpx.ReadError, httpx.WriteError,
+)
 
 DEFAULT_CACHE_TTL = 1800  # 30 minutes — TMDB metadata/discovery results don't need to be fresher than this
 
@@ -89,6 +95,29 @@ class _TTLCache:
 
 _cache = _TTLCache()
 
+# One pooled client for the whole process, opened and closed by main.lifespan:
+# a client per call rebuilt its TLS context (blocking the event loop) and paid
+# DNS + TCP + TLS on every request. keepalive_expiry must stay below TMDB's
+# edge idle timeout (~3 min). No connection cap, as before: a pool wait would
+# count against _HTTP_TIMEOUT and could trip the breaker.
+_client: httpx.AsyncClient | None = None
+
+
+def init_client() -> None:
+    global _client
+    _client = httpx.AsyncClient(
+        timeout=httpx.Timeout(_HTTP_TIMEOUT),
+        limits=httpx.Limits(max_connections=None, keepalive_expiry=120.0),
+    )
+
+
+async def close_client() -> None:
+    global _client
+    # Cleared first: a call racing shutdown falls back instead of using a closed client.
+    client, _client = _client, None
+    if client is not None:
+        await client.aclose()
+
 
 def get_headers(api_key: str = None) -> dict:
     key = api_key or getattr(settings, 'tmdb_api_key', None)
@@ -132,7 +161,9 @@ async def _get(
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(_HTTP_TIMEOUT)) as client:
+            # No shared client outside the app lifespan (unit tests, scripts).
+            async with (contextlib.nullcontext(_client) if _client is not None
+                        else httpx.AsyncClient(timeout=httpx.Timeout(_HTTP_TIMEOUT))) as client:
                 r = await client.get(url, headers=headers or {}, params=params)
                 if r.status_code == 429:
                     wait = int(r.headers.get("Retry-After", 2 ** (attempt + 1)))
@@ -458,6 +489,7 @@ async def discover_movies(
     page: int = 1,
     genre_id: int | None = None,
     genre_ids: list[int] | None = None,  # OR'd via TMDB's "|" syntax; takes priority over genre_id if both given
+    without_genre_ids: list[int] | None = None,  # genres to leave out; any match excludes ("|" = OR)
     year: int | None = None,
     min_rating: float | None = None,
     vote_count_min: int | None = None,
@@ -480,6 +512,8 @@ async def discover_movies(
         params["with_genres"] = "|".join(str(g) for g in genre_ids)
     elif genre_id:
         params["with_genres"] = genre_id
+    if without_genre_ids:
+        params["without_genres"] = "|".join(str(g) for g in without_genre_ids)
     if year:
         params["primary_release_year"] = year
     if min_rating:
@@ -502,6 +536,7 @@ async def discover_shows(
     page: int = 1,
     genre_id: int | None = None,
     genre_ids: list[int] | None = None,  # OR'd via TMDB's "|" syntax; takes priority over genre_id if both given
+    without_genre_ids: list[int] | None = None,  # genres to leave out; any match excludes ("|" = OR)
     year: int | None = None,
     min_rating: float | None = None,
     vote_count_min: int | None = None,
@@ -526,6 +561,8 @@ async def discover_shows(
         params["with_genres"] = "|".join(str(g) for g in genre_ids)
     elif genre_id:
         params["with_genres"] = genre_id
+    if without_genre_ids:
+        params["without_genres"] = "|".join(str(g) for g in without_genre_ids)
     if year:
         params["first_air_date_year"] = year
     if min_rating:

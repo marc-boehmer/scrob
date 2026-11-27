@@ -502,6 +502,23 @@ class ExpandMultiEpisodeItemsTests(unittest.TestCase):
         # Original item must be untouched - other code still iterates the raw list.
         self.assertEqual(item["IndexNumber"], 1)
 
+    def test_extra_episodes_do_not_inherit_first_episode_provider_ids(self):
+        """#525: the item's ProviderIds are the first episode's. Copies for the
+        later episodes must not carry them, or every copy resolves to the same
+        Media row and the file is inserted twice (uq_collection_file_source)."""
+        item = {
+            "Id": "file-1", "IndexNumber": 1, "IndexNumberEnd": 3,
+            "ProviderIds": {"Tmdb": "353500", "Tvdb": "42"},
+        }
+
+        expanded = sync._expand_multi_episode_items(
+            [item], sync.MediaType.episode, sync.CollectionSource.jellyfin,
+        )
+
+        self.assertEqual(expanded[0]["ProviderIds"], {"Tmdb": "353500", "Tvdb": "42"})
+        self.assertEqual([e["ProviderIds"] for e in expanded[1:]], [{}, {}])
+        self.assertEqual(item["ProviderIds"], {"Tmdb": "353500", "Tvdb": "42"})
+
     def test_three_episode_span_expands_to_three(self):
         item = {"Id": "file-2", "IndexNumber": 5, "IndexNumberEnd": 7}
 
@@ -539,6 +556,12 @@ class ExpandMultiEpisodeItemsTests(unittest.TestCase):
         )
 
         self.assertEqual(expanded, [item])
+
+    def test_row_count_counts_one_row_per_expanded_episode(self):
+        items = [{"Id": "file-1", "IndexNumber": 1, "IndexNumberEnd": 3}, {"Id": "file-2", "IndexNumber": 4}]
+
+        self.assertEqual(sync._sync_row_count(items, sync.MediaType.episode, sync.CollectionSource.emby), 4)
+        self.assertEqual(sync._sync_row_count(items, sync.MediaType.episode, sync.CollectionSource.plex), 2)
 
     def test_plex_source_is_never_expanded(self):
         # Scoped to Jellyfin/Emby only - Plex doesn't expose this field at all.
@@ -1167,6 +1190,110 @@ class SyncItemsPushBackTests(_PartialWatchDB):
         self.assertEqual(push_back, {})
 
 
+class SyncItemsSkippedItemProgressTests(_PartialWatchDB):
+    """An unmatched item that can't be stored as a stub is skipped. If it was the
+    last one of a batch, the skip jumped over the batch bookkeeping and that
+    whole batch never reached processed_items - the job ended below 100%."""
+
+    async def test_skipped_item_at_a_batch_boundary_still_counts_the_batch(self):
+        from models.collection import CollectionSource
+        from models.media import MediaType
+        from models.sync import SyncJob
+
+        # No TMDB id and no name: unmatched, and too little to store a stub.
+        items = [{"Id": f"jf-{n}", "ProviderIds": {}} for n in range(3)]
+        async with self.Session() as db:
+            job = SyncJob(user_id=1, source=CollectionSource.jellyfin, total_items=len(items), processed_items=0)
+            db.add(job)
+            await db.commit()
+
+            stats = {"movies": 0, "episodes": 0, "skipped": 0, "errors": 0}
+            with patch.object(sync, "BATCH_SIZE", 2):
+                await sync.sync_items(
+                    items=items,
+                    media_type=MediaType.movie,
+                    source=CollectionSource.jellyfin,
+                    db=db,
+                    stats=stats,
+                    user_id=1,
+                    job_id=job.id,
+                    connection_id=7,
+                )
+
+            await db.refresh(job)
+            self.assertEqual(stats["skipped"], 3)
+            self.assertEqual(stats["errors"], 0)
+            self.assertEqual((job.processed_items, job.total_items), (3, 3))
+
+
+class SyncRowCountMatchesProcessedTests(_PartialWatchDB):
+    """Jellyfin/Emby pulls size the job's total_items with _sync_row_count while
+    sync_items counts processed_items per expanded row (#138). Sized by
+    len(items) instead, a library with combined files finished above 100%
+    (e.g. 49052 / 48532)."""
+
+    async def test_job_sized_by_row_count_ends_at_its_total(self):
+        from models.collection import CollectionSource
+        from models.media import MediaType
+        from models.sync import SyncJob
+
+        items = [
+            {"Id": "file-1", "SeriesId": "s-1", "ParentIndexNumber": 1, "IndexNumber": 1, "IndexNumberEnd": 3},
+            {"Id": "file-2", "SeriesId": "s-1", "ParentIndexNumber": 1, "IndexNumber": 4},
+        ]
+        total = sync._sync_row_count(items, MediaType.episode, CollectionSource.jellyfin)
+        async with self.Session() as db:
+            job = SyncJob(user_id=1, source=CollectionSource.jellyfin, total_items=total, processed_items=0)
+            db.add(job)
+            await db.commit()
+
+            await sync.sync_items(
+                items=items,
+                media_type=MediaType.episode,
+                source=CollectionSource.jellyfin,
+                db=db,
+                stats={"movies": 0, "episodes": 0, "skipped": 0, "errors": 0},
+                user_id=1,
+                job_id=job.id,
+                connection_id=7,
+            )
+
+            await db.refresh(job)
+            self.assertEqual((job.processed_items, job.total_items), (4, 4))
+
+    async def test_sync_items_leaves_the_jobs_running_total_alone(self):
+        """The pull sizes total_items across every library and step, and
+        processed_items accumulates across sync_items calls, so one call must
+        not overwrite the total with its own row count (it ended at 10 / 4)."""
+        from models.collection import CollectionSource
+        from models.media import MediaType
+        from models.sync import SyncJob
+
+        items = [
+            {"Id": "file-1", "SeriesId": "s-1", "ParentIndexNumber": 1, "IndexNumber": 1, "IndexNumberEnd": 3},
+            {"Id": "file-2", "SeriesId": "s-1", "ParentIndexNumber": 1, "IndexNumber": 4},
+        ]
+        async with self.Session() as db:
+            # 6 movies already processed; 6 + 4 episode rows planned in total.
+            job = SyncJob(user_id=1, source=CollectionSource.jellyfin, total_items=10, processed_items=6)
+            db.add(job)
+            await db.commit()
+
+            await sync.sync_items(
+                items=items,
+                media_type=MediaType.episode,
+                source=CollectionSource.jellyfin,
+                db=db,
+                stats={"movies": 0, "episodes": 0, "skipped": 0, "errors": 0},
+                user_id=1,
+                job_id=job.id,
+                connection_id=7,
+            )
+
+            await db.refresh(job)
+            self.assertEqual((job.processed_items, job.total_items), (10, 10))
+
+
 class PushWatchedBackToSourceTests(_PartialWatchDB):
     def _conn(self, type_="jellyfin", push_watched=True):
         return SimpleNamespace(
@@ -1287,6 +1414,59 @@ class FullPushPartialWatchTests(_PartialWatchDB):
         self.assertEqual(armed_media_ids, [self.finished_media_id])
 
 
+class FullPushTvdbOnlyServerSeriesTests(_PartialWatchDB):
+    """#429: a show Scrob knows by both TMDB and TVDB ids was reported "not
+    found on this server" when the Jellyfin/Emby series only carries a TVDB
+    provider id - the TVDB-keyed index was only built for shows with no TMDB id."""
+
+    async def _seed(self) -> tuple[int, int]:
+        from models.collection import CollectionSource
+        from models.events import WatchEvent
+        from models.media import Media, MediaType
+        from models.show import Show
+        from models.sync import SyncJob, SyncStatus
+
+        async with self.Session() as db:
+            conn = MediaServerConnection(
+                user_id=1, type="jellyfin", name="Jellyfin", url="http://jf", token="tok",
+                server_user_id="jf-user", push_watched=True,
+            )
+            db.add(conn)
+            await db.flush()
+            job = SyncJob(
+                user_id=1, source=CollectionSource.jellyfin, status=SyncStatus.pending,
+                connection_id=conn.id, job_type="push",
+            )
+            show = Show(tmdb_id=71446, tvdb_id=327417, title="Money Heist")
+            db.add_all([job, show])
+            await db.flush()
+            episode = Media(
+                tmdb_id=1234, media_type=MediaType.episode, title="Pilot",
+                show_id=show.id, season_number=1, episode_number=1,
+            )
+            db.add(episode)
+            await db.flush()
+            db.add(WatchEvent(
+                user_id=1, media_id=episode.id, watched_at=datetime(2026, 1, 1),
+                completed=True, play_count=1, progress_percent=1.0,
+            ))
+            await db.commit()
+            return conn.id, job.id
+
+    async def test_series_known_to_the_server_only_by_tvdb_id_is_found(self):
+        connection_id, job_id = await self._seed()
+        mark_watched = AsyncMock(return_value=True)
+        with patch.object(sync, "engine", self.engine), \
+             patch.object(sync.jellyfin, "build_tmdb_index", AsyncMock(return_value={})), \
+             patch.object(sync.jellyfin, "build_tvdb_index", AsyncMock(return_value={327417: "series-jf"})), \
+             patch.object(sync.jellyfin, "find_episode_in_series", AsyncMock(return_value={"Id": "ep-jf"})), \
+             patch.object(sync.jellyfin, "get_items_watched_state", AsyncMock(return_value={"ep-jf": False})), \
+             patch.object(sync.jellyfin, "mark_watched", mark_watched), \
+             patch("routers.webhooks.mark_pushed_watched"):
+            await sync._run_full_push(1, connection_id, job_id)
+        self.assertEqual([call.args[3] for call in mark_watched.await_args_list], ["ep-jf"])
+
+
 class FullPushEchoTokenTimingTests(_PartialWatchDB):
     """#372: the push-echo token is armed in _push_watched_group, right
     before the mark_watched call - not once for the whole job up front,
@@ -1390,6 +1570,33 @@ class WatchedLookupFailedWarningTests(unittest.TestCase):
             sync.watched_lookup_failed_warning(1, episode, series_name="Some Show")["series_name"],
             "Some Show",
         )
+
+
+class PushFailedWarningTests(unittest.TestCase):
+    """A full push names every item it could not send and why, instead of
+    only counting them in stats.failed."""
+
+    def test_carries_action_reason_and_series_for_episodes(self):
+        episode = SimpleNamespace(title="Pilot", media_type=sync.MediaType.episode)
+        self.assertEqual(
+            sync.push_failed_warning(7, episode, "rating", "Not in Plex", series_name="Some Show"),
+            {
+                "type": "push_failed",
+                "media_id": 7,
+                "title": "Pilot",
+                "media_type": "episode",
+                "series_name": "Some Show",
+                "action": "rating",
+                "reason": "Not in Plex",
+            },
+        )
+
+    def test_series_name_dropped_for_movies_and_missing_media(self):
+        movie = SimpleNamespace(title="A Movie", media_type=sync.MediaType.movie)
+        self.assertIsNone(sync.push_failed_warning(1, movie, "watched", "x", series_name="Show")["series_name"])
+        warning = sync.push_failed_warning(1, None, "watched", "x")
+        self.assertIsNone(warning["title"])
+        self.assertIsNone(warning["media_type"])
 
 
 class MatchUnmatchedShowDisplacedTmdbIdTests(_PartialWatchDB):

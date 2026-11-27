@@ -69,7 +69,6 @@ _SCROBBLE_CONNECTION_FIELDS = (
     "sync_collection", "sync_watched", "sync_playback",
 )
 
-_WATCHLIST_SLUGS = {"__watchlist__", "__watchlist_movies__", "__watchlist_shows__", "__plex_watchlist__"}
 
 # Sync preferences only (booleans + auto-sync intervals) — never a URL, token, or API key.
 _SAFE_SETTINGS_FIELDS = (
@@ -279,8 +278,7 @@ async def build_lists(db: AsyncSession, user_id: int) -> tuple[list[dict], list[
                 continue
             items.append(entry)
 
-        is_watchlist = lst.trakt_slug in _WATCHLIST_SLUGS or lst.mdblist_slug in _WATCHLIST_SLUGS
-        if is_watchlist:
+        if lst.is_watchlist:
             watchlist_items.extend(items)
             continue
 
@@ -329,11 +327,14 @@ async def build_comments(db: AsyncSession, user_id: int) -> dict[str, list[dict]
         elif c.media_type == "series" and c.season_number is None:
             show = shows_by_tmdb.get(c.tmdb_id)
             out["shows"].append({**base, "show": _show_dict(c.tmdb_id, show.title if show else "", show.first_air_date if show else None, show.tvdb_id if show else None)})
-        elif c.media_type == "series" and c.season_number is not None:
+        elif c.media_type == "series" and c.episode_number is None:
             show = shows_by_tmdb.get(c.tmdb_id)
             out["seasons"].append({**base, "season": {"number": c.season_number}, "show": _show_dict(c.tmdb_id, show.title if show else "", show.first_air_date if show else None, show.tvdb_id if show else None)})
-        elif c.media_type == "episode":
-            out["episodes"].append({**base, "episode": {"season": c.season_number, "number": c.episode_number}, "ids": {"tmdb": c.tmdb_id}})
+        elif c.media_type in ("series", "episode"):
+            # The UI stores episode comments as media_type "series" with both
+            # season and episode numbers set; "episode" is the importer's old form.
+            show = shows_by_tmdb.get(c.tmdb_id)
+            out["episodes"].append({**base, "episode": {"season": c.season_number, "number": c.episode_number}, "show": _show_dict(c.tmdb_id, show.title if show else "", show.first_air_date if show else None, show.tvdb_id if show else None), "ids": {"tmdb": c.tmdb_id}})
     return out
 
 

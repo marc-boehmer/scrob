@@ -1,14 +1,19 @@
 import asyncio
 import logging
+import math
+import os
 import re
+import time
+import uuid
+from urllib.parse import unquote
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy import select, delete, func, and_, or_
 from sqlalchemy.orm import selectinload, aliased
 
-from db import get_db
+from db import get_db, engine
 from models.lists import List as ListModel, ListItem
 from models.media import Media
 from models.base import MediaType, PrivacyLevel
@@ -21,6 +26,7 @@ from models.global_settings import GlobalSettings
 from routers.media import enrich_with_state, require_anon_nav_allowed
 from core.enrichment import is_unmapped_tvdb_episode, create_media_safely, get_or_create_tvdb_series_media
 from core.identity import find_media, find_show
+from core.native_watchlist import get_or_create_watchlist, reset_watchlist_baselines
 from core.translations import (
     apply_media_translations,
     get_media_translations,
@@ -98,6 +104,7 @@ def _format_list(lst: ListModel) -> dict:
         "name": lst.name,
         "description": lst.description,
         "privacy_level": lst.privacy_level,
+        "is_watchlist": lst.is_watchlist,
         "item_count": len(lst.items),
         "created_at": lst.created_at.isoformat(),
         "updated_at": lst.updated_at.isoformat(),
@@ -212,14 +219,35 @@ async def get_lists(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_or_api_key),
 ):
+    # The watchlist always shows, even before any service has synced into it.
+    await get_or_create_watchlist(db, current_user.id)
+    await db.commit()
     result = await db.execute(
         select(ListModel)
         .options(selectinload(ListModel.items).selectinload(ListItem.media).selectinload(Media.show))
         .where(ListModel.user_id == current_user.id)
-        .order_by(ListModel.updated_at.desc())
+        .order_by(ListModel.is_watchlist.desc(), ListModel.updated_at.desc())
     )
     lists = result.scalars().all()
     return {"lists": [_format_list(lst) for lst in lists]}
+
+
+@router.get("/watchlist")
+async def get_watchlist(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_or_api_key),
+):
+    """The user's native watchlist, created on first use. Its id works with
+    every /lists/{list_id} endpoint; adds and removals there are pushed to
+    each service with watchlist push enabled."""
+    watchlist = await get_or_create_watchlist(db, current_user.id)
+    await db.commit()
+    result = await db.execute(
+        select(ListModel)
+        .options(selectinload(ListModel.items).selectinload(ListItem.media).selectinload(Media.show))
+        .where(ListModel.id == watchlist.id)
+    )
+    return _format_list(result.scalar_one())
 
 
 @router.post("", status_code=201)
@@ -242,11 +270,146 @@ async def create_list(
         "name": lst.name,
         "description": lst.description,
         "privacy_level": lst.privacy_level,
+        "is_watchlist": False,
         "item_count": 0,
         "created_at": lst.created_at.isoformat(),
         "updated_at": lst.updated_at.isoformat(),
         "preview_posters": [],
     }
+
+
+# Remote list imports run as background jobs: the POST validates the source,
+# creates (or reuses) the local list and returns it right away together with an
+# "import" job, and the items are resolved and added in batches while the client
+# polls GET /lists/import/jobs/{job_id}. Jobs live in memory (the list itself is
+# committed first and filled incrementally, so a restart just leaves it partial
+# and re-importing the same source tops it up).
+_IMPORT_DEFAULT_MAX_ITEMS = 10000
+_IMPORT_CHUNK = 8
+_IMPORT_JOB_TTL_SECONDS = 3600
+_IMPORT_JOBS: dict[str, dict] = {}
+_IMPORT_TASKS: set[asyncio.Task] = set()
+
+
+def _import_max_items() -> int:
+    """Per-import item ceiling. Self-hosters can change it with the
+    LIST_IMPORT_MAX_ITEMS environment variable (#508)."""
+    try:
+        return max(1, int(os.getenv("LIST_IMPORT_MAX_ITEMS", _IMPORT_DEFAULT_MAX_ITEMS)))
+    except ValueError:
+        return _IMPORT_DEFAULT_MAX_ITEMS
+
+
+def _import_session() -> AsyncSession:
+    return async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)()
+
+
+def _public_import_job(job: dict) -> dict:
+    return {k: v for k, v in job.items() if k not in ("user_id", "finished_at")}
+
+
+async def _drive_import(job: dict, produce, prepare, make_media) -> None:
+    """Feed ``produce(job)`` (an async generator of source entries) through
+    ``prepare`` (network-only resolution, run concurrently per chunk) and
+    ``make_media`` (DB work, sequential) into the job's list, committing after
+    every chunk so progress is visible and a failure keeps what was added."""
+    try:
+        async with _import_session() as db:
+            rows = await db.execute(select(ListItem.media_id).where(ListItem.list_id == job["list_id"]))
+            existing_media_ids = {row[0] for row in rows}
+            pending: list = []
+
+            async def flush() -> None:
+                prepared = await asyncio.gather(*(prepare(e) for e in pending))
+                pending.clear()
+                for item in prepared:
+                    job["processed"] += 1
+                    if item is None:
+                        job["skipped"] += 1
+                        continue
+                    try:
+                        async with db.begin_nested():
+                            media = await make_media(db, item)
+                    except Exception as exc:
+                        logger.warning("List import %s: could not import an item: %s", job["id"], exc)
+                        job["skipped"] += 1
+                        continue
+                    if not media:
+                        job["skipped"] += 1
+                        continue
+                    if media.id in existing_media_ids:
+                        continue
+                    db.add(ListItem(list_id=job["list_id"], media_id=media.id))
+                    existing_media_ids.add(media.id)
+                    job["added"] += 1
+                await db.commit()
+
+            async for entry in produce(job):
+                pending.append(entry)
+                if len(pending) >= _IMPORT_CHUNK:
+                    await flush()
+            if pending:
+                await flush()
+        job["status"] = "completed"
+    except Exception as exc:
+        logger.exception("List import %s failed", job["id"])
+        job["status"] = "failed"
+        job["error"] = str(exc)[:500]
+    finally:
+        job["finished_at"] = time.time()
+
+
+async def _begin_import(db: AsyncSession, user: User, lst: ListModel, produce, prepare, make_media, total: int = 0) -> dict:
+    """Commit the list, start (or join) its import job and return the list
+    payload with the job under "import"."""
+    await db.commit()
+    now = time.time()
+    for job_id in [j for j, job in _IMPORT_JOBS.items() if job.get("finished_at") and now - job["finished_at"] > _IMPORT_JOB_TTL_SECONDS]:
+        del _IMPORT_JOBS[job_id]
+
+    job = next(
+        (j for j in _IMPORT_JOBS.values() if j["list_id"] == lst.id and j["status"] == "running"),
+        None,
+    )
+    if job is None:
+        job = {
+            "id": uuid.uuid4().hex,
+            "user_id": user.id,
+            "list_id": lst.id,
+            "status": "running",
+            "total": total,
+            "processed": 0,
+            "added": 0,
+            "skipped": 0,
+            "truncated": False,
+            "limit": _import_max_items(),
+            "error": None,
+            "warning": None,
+            "finished_at": None,
+        }
+        _IMPORT_JOBS[job["id"]] = job
+        task = asyncio.create_task(_drive_import(job, produce, prepare, make_media))
+        _IMPORT_TASKS.add(task)
+        task.add_done_callback(_IMPORT_TASKS.discard)
+
+    result = await db.execute(
+        select(ListModel)
+        .options(selectinload(ListModel.items).selectinload(ListItem.media).selectinload(Media.show))
+        .where(ListModel.id == lst.id)
+    )
+    return {**_format_list(result.scalar_one()), "import": _public_import_job(job)}
+
+
+async def _identity(entry):
+    return entry
+
+
+@router.get("/import/jobs/{job_id}")
+async def get_import_job(job_id: str, current_user: User = Depends(get_current_user_or_api_key)):
+    job = _IMPORT_JOBS.get(job_id)
+    if not job or job["user_id"] != current_user.id:
+        raise HTTPException(status_code=404, detail="Import job not found")
+    return _public_import_job(job)
 
 
 class TmdbListImport(BaseModel):
@@ -264,10 +427,7 @@ def _parse_tmdb_list_id(raw: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
-# A single POST request resolves every item synchronously (no background
-# job/polling UI exists for this yet, unlike Trakt/MDBList/etc.) - capped so
-# a huge public list can't make that request run for minutes.
-_TMDB_LIST_IMPORT_MAX_PAGES = 25  # 20 items/page = 500 items
+_TMDB_LIST_PAGE_SIZE = 20
 
 
 @router.post("/import/tmdb", status_code=201)
@@ -293,14 +453,9 @@ async def import_tmdb_list(
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"TMDB list not found (it may be private): {e}")
 
-    total_pages = min(first_page.get("total_pages", 1) or 1, _TMDB_LIST_IMPORT_MAX_PAGES)
-    pages = [first_page]
-    for p in range(2, total_pages + 1):
-        try:
-            pages.append(await tmdb.get_list(tmdb_list_id, api_key=api_key, page=p))
-        except Exception as exc:
-            logger.warning("TMDB list %s: stopped early at page %s: %s", tmdb_list_id, p, exc)
-            break
+    limit = _import_max_items()
+    source_total = first_page.get("total_results") or len(first_page.get("results", []))
+    total_pages = min(first_page.get("total_pages", 1) or 1, math.ceil(limit / _TMDB_LIST_PAGE_SIZE))
 
     existing_list_result = await db.execute(
         select(ListModel).where(
@@ -319,43 +474,39 @@ async def import_tmdb_list(
         db.add(lst)
         await db.flush()
 
-    existing_media_ids_result = await db.execute(
-        select(ListItem.media_id).where(ListItem.list_id == lst.id)
+    async def produce(job):
+        job["truncated"] = source_total > limit
+        emitted = 0
+        for p in range(1, total_pages + 1):
+            if p == 1:
+                page_data = first_page
+            else:
+                try:
+                    page_data = await tmdb.get_list(tmdb_list_id, api_key=api_key, page=p)
+                except Exception as exc:
+                    logger.warning("TMDB list %s: stopped early at page %s: %s", tmdb_list_id, p, exc)
+                    job["warning"] = f"Stopped early at page {p}: {exc}"
+                    return
+            for entry in page_data.get("results", []):
+                if emitted >= limit:
+                    return
+                if not entry.get("id") or entry.get("media_type") not in ("movie", "tv"):
+                    continue
+                emitted += 1
+                yield entry
+
+    async def make_media(db, entry):
+        if entry["media_type"] == "movie":
+            return await _get_or_create_movie_media(
+                db, entry["id"], entry.get("title") or entry.get("original_title") or "", api_key
+            )
+        return await _get_or_create_series_media(
+            db, entry["id"], entry.get("name") or entry.get("original_name") or "", api_key
+        )
+
+    return await _begin_import(
+        db, current_user, lst, produce, _identity, make_media, total=min(source_total, limit),
     )
-    existing_media_ids = {row[0] for row in existing_media_ids_result}
-
-    for page_data in pages:
-        for entry in page_data.get("results", []):
-            tmdb_id = entry.get("id")
-            media_type = entry.get("media_type")
-            if not tmdb_id or media_type not in ("movie", "tv"):
-                continue
-            try:
-                async with db.begin_nested():
-                    if media_type == "movie":
-                        media = await _get_or_create_movie_media(
-                            db, tmdb_id, entry.get("title") or entry.get("original_title") or "", api_key
-                        )
-                    else:
-                        media = await _get_or_create_series_media(
-                            db, tmdb_id, entry.get("name") or entry.get("original_name") or "", api_key
-                        )
-            except Exception as exc:
-                logger.warning("Could not import TMDB list %s item tmdb_id=%s (%s): %s", tmdb_list_id, tmdb_id, media_type, exc)
-                continue
-            if not media or media.id in existing_media_ids:
-                continue
-            db.add(ListItem(list_id=lst.id, media_id=media.id))
-            existing_media_ids.add(media.id)
-
-    await db.commit()
-
-    result = await db.execute(
-        select(ListModel)
-        .options(selectinload(ListModel.items).selectinload(ListItem.media).selectinload(Media.show))
-        .where(ListModel.id == lst.id)
-    )
-    return _format_list(result.scalar_one())
 
 
 class TvdbListImport(BaseModel):
@@ -378,11 +529,9 @@ def _parse_tvdb_list_ref(raw: str) -> Optional[str]:
     return ref
 
 
-# Same reasoning as _TMDB_LIST_IMPORT_MAX_PAGES, but counting entities
-# directly (TVDB's list-extended call isn't paginated - one request returns
-# every entity). Kept lower than TMDB's cap since each entity here costs an
-# *additional* TVDB call to resolve its TMDB cross-id.
-_TVDB_LIST_IMPORT_MAX_ENTITIES = 300
+# TVDB's list-extended call isn't paginated (one request returns every
+# entity), but each entity costs an additional TVDB call to resolve its TMDB
+# cross-id, so those run bounded-concurrently inside the background job.
 _TVDB_LIST_IMPORT_CONCURRENCY = 8
 
 
@@ -426,7 +575,9 @@ async def import_tvdb_list(
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"TVDB list not found: {e}")
 
-    entities = (list_data.get("entities") or [])[:_TVDB_LIST_IMPORT_MAX_ENTITIES]
+    limit = _import_max_items()
+    all_entities = list_data.get("entities") or []
+    entities = all_entities[:limit]
 
     # Resolving each entity's TMDB cross-id is its own TVDB call - the part
     # of this import that's genuinely "so many calls" (#442 follow-up) - so
@@ -435,7 +586,7 @@ async def import_tvdb_list(
     # TMDB fan-out.
     sem = asyncio.Semaphore(_TVDB_LIST_IMPORT_CONCURRENCY)
 
-    async def _resolve(entity: dict) -> tuple[str, int, int | None] | None:
+    async def prepare(entity: dict) -> tuple[str, int, int | None] | None:
         series_id = entity.get("seriesId")
         movie_id = entity.get("movieId")
         async with sem:
@@ -447,8 +598,6 @@ async def import_tvdb_list(
             except Exception as exc:
                 logger.warning("TVDB list %s: could not resolve entity %s: %s", tvdb_list_id, entity, exc)
         return None
-
-    resolved = await asyncio.gather(*(_resolve(e) for e in entities))
 
     existing_list_result = await db.execute(
         select(ListModel).where(
@@ -467,39 +616,20 @@ async def import_tvdb_list(
         db.add(lst)
         await db.flush()
 
-    existing_media_ids_result = await db.execute(
-        select(ListItem.media_id).where(ListItem.list_id == lst.id)
-    )
-    existing_media_ids = {row[0] for row in existing_media_ids_result}
+    async def produce(job):
+        job["truncated"] = len(all_entities) > limit
+        for entity in entities:
+            yield entity
 
-    for entry in resolved:
-        if not entry:
-            continue
-        kind, _tvdb_entity_id, tmdb_id = entry
+    async def make_media(db, resolved):
+        kind, _tvdb_entity_id, tmdb_id = resolved
         if not tmdb_id:
-            continue  # no TMDB counterpart on file for this show/movie - skip it
-        try:
-            async with db.begin_nested():
-                if kind == "movie":
-                    media = await _get_or_create_movie_media(db, tmdb_id, f"TMDB {tmdb_id}", tmdb_key)
-                else:
-                    media = await _get_or_create_series_media(db, tmdb_id, f"TMDB {tmdb_id}", tmdb_key)
-        except Exception as exc:
-            logger.warning("Could not import TVDB list %s item tmdb_id=%s (%s): %s", tvdb_list_id, tmdb_id, kind, exc)
-            continue
-        if not media or media.id in existing_media_ids:
-            continue
-        db.add(ListItem(list_id=lst.id, media_id=media.id))
-        existing_media_ids.add(media.id)
+            return None  # no TMDB counterpart on file for this show/movie - skip it
+        if kind == "movie":
+            return await _get_or_create_movie_media(db, tmdb_id, f"TMDB {tmdb_id}", tmdb_key)
+        return await _get_or_create_series_media(db, tmdb_id, f"TMDB {tmdb_id}", tmdb_key)
 
-    await db.commit()
-
-    result = await db.execute(
-        select(ListModel)
-        .options(selectinload(ListModel.items).selectinload(ListItem.media).selectinload(Media.show))
-        .where(ListModel.id == lst.id)
-    )
-    return _format_list(result.scalar_one())
+    return await _begin_import(db, current_user, lst, produce, prepare, make_media, total=len(entities))
 
 
 class ImdbListImport(BaseModel):
@@ -515,10 +645,9 @@ def _parse_imdb_list_id(raw: str) -> Optional[str]:
     return match.group(1).lower() if match else None
 
 
-# IMDb returns cursor-paginated pages. Keep this synchronous endpoint bounded
-# to the same 500-item ceiling as TMDB, then resolve external ids concurrently.
+# IMDb returns cursor-paginated pages; the first one is fetched up front (it
+# carries the list name), the rest while the background job runs.
 _IMDB_LIST_IMPORT_PAGE_SIZE = 100
-_IMDB_LIST_IMPORT_MAX_PAGES = 5
 _IMDB_LIST_IMPORT_CONCURRENCY = 8
 
 
@@ -540,40 +669,42 @@ async def import_imdb_list(
     if not tmdb_key:
         raise HTTPException(status_code=400, detail="TMDB API key required to resolve IMDb list items")
 
-    pages: list[dict] = []
-    after: str | None = None
     try:
-        for _page_number in range(_IMDB_LIST_IMPORT_MAX_PAGES):
-            page = await imdb_client.get_public_list_page(
-                imdb_list_id,
-                after=after,
-                first=_IMDB_LIST_IMPORT_PAGE_SIZE,
-            )
-            pages.append(page)
-            page_info = ((page.get("titleListItemSearch") or {}).get("pageInfo") or {})
-            if not page_info.get("hasNextPage"):
-                break
-            after = page_info.get("endCursor")
-            if not after:
-                break
+        first_page = await imdb_client.get_public_list_page(
+            imdb_list_id,
+            after=None,
+            first=_IMDB_LIST_IMPORT_PAGE_SIZE,
+        )
     except Exception as exc:
-        if not pages:
-            raise HTTPException(
-                status_code=404,
-                detail=f"IMDb list not found (it may be private): {exc}",
-            )
-        logger.warning("IMDb list %s: stopped early after %s page(s): %s", imdb_list_id, len(pages), exc)
+        raise HTTPException(
+            status_code=404,
+            detail=f"IMDb list not found (it may be private): {exc}",
+        )
 
-    first_page = pages[0]
-    entries = [
-        edge.get("title") or {}
-        for page in pages
-        for edge in ((page.get("titleListItemSearch") or {}).get("edges") or [])
-    ]
+    limit = _import_max_items()
+
+    existing_list_result = await db.execute(
+        select(ListModel).where(
+            ListModel.user_id == current_user.id,
+            ListModel.imdb_list_id == imdb_list_id,
+        )
+    )
+    lst = existing_list_result.scalar_one_or_none()
+    if not lst:
+        name = ((first_page.get("name") or {}).get("originalText") or f"IMDb List {imdb_list_id}")
+        description = (((first_page.get("description") or {}).get("originalText") or {}).get("plainText"))
+        lst = ListModel(
+            user_id=current_user.id,
+            name=name[:255],
+            description=description or None,
+            imdb_list_id=imdb_list_id,
+        )
+        db.add(lst)
+        await db.flush()
 
     sem = asyncio.Semaphore(_IMDB_LIST_IMPORT_CONCURRENCY)
 
-    async def _resolve(entry: dict) -> tuple[str, int, str] | None:
+    async def prepare(entry: dict) -> tuple[str, int, str] | None:
         imdb_id = entry.get("id")
         if not isinstance(imdb_id, str) or not re.fullmatch(r"tt\d+", imdb_id):
             return None
@@ -598,61 +729,42 @@ async def import_imdb_list(
         # movie nor whole-series match in TMDB and are intentionally skipped.
         return None
 
-    resolved = await asyncio.gather(*(_resolve(entry) for entry in entries))
+    async def produce(job):
+        page = first_page
+        emitted = 0
+        while True:
+            search = page.get("titleListItemSearch") or {}
+            for edge in (search.get("edges") or []):
+                if emitted >= limit:
+                    job["truncated"] = True
+                    return
+                emitted += 1
+                yield edge.get("title") or {}
+            page_info = search.get("pageInfo") or {}
+            after = page_info.get("endCursor")
+            if not page_info.get("hasNextPage") or not after:
+                return
+            if emitted >= limit:
+                job["truncated"] = True
+                return
+            try:
+                page = await imdb_client.get_public_list_page(
+                    imdb_list_id,
+                    after=after,
+                    first=_IMDB_LIST_IMPORT_PAGE_SIZE,
+                )
+            except Exception as exc:
+                logger.warning("IMDb list %s: stopped early after %s item(s): %s", imdb_list_id, emitted, exc)
+                job["warning"] = f"Stopped early after {emitted} items: {exc}"
+                return
 
-    existing_list_result = await db.execute(
-        select(ListModel).where(
-            ListModel.user_id == current_user.id,
-            ListModel.imdb_list_id == imdb_list_id,
-        )
-    )
-    lst = existing_list_result.scalar_one_or_none()
-    if not lst:
-        name = ((first_page.get("name") or {}).get("originalText") or f"IMDb List {imdb_list_id}")
-        description = (((first_page.get("description") or {}).get("originalText") or {}).get("plainText"))
-        lst = ListModel(
-            user_id=current_user.id,
-            name=name[:255],
-            description=description or None,
-            imdb_list_id=imdb_list_id,
-        )
-        db.add(lst)
-        await db.flush()
+    async def make_media(db, resolved):
+        kind, tmdb_id, title = resolved
+        if kind == "movie":
+            return await _get_or_create_movie_media(db, tmdb_id, title, tmdb_key)
+        return await _get_or_create_series_media(db, tmdb_id, title, tmdb_key)
 
-    existing_media_ids_result = await db.execute(
-        select(ListItem.media_id).where(ListItem.list_id == lst.id)
-    )
-    existing_media_ids = {row[0] for row in existing_media_ids_result}
-
-    for entry in resolved:
-        if not entry:
-            continue
-        kind, tmdb_id, title = entry
-        try:
-            async with db.begin_nested():
-                if kind == "movie":
-                    media = await _get_or_create_movie_media(db, tmdb_id, title, tmdb_key)
-                else:
-                    media = await _get_or_create_series_media(db, tmdb_id, title, tmdb_key)
-        except Exception as exc:
-            logger.warning(
-                "Could not import IMDb list %s item tmdb_id=%s (%s): %s",
-                imdb_list_id, tmdb_id, kind, exc,
-            )
-            continue
-        if not media or media.id in existing_media_ids:
-            continue
-        db.add(ListItem(list_id=lst.id, media_id=media.id))
-        existing_media_ids.add(media.id)
-
-    await db.commit()
-
-    result = await db.execute(
-        select(ListModel)
-        .options(selectinload(ListModel.items).selectinload(ListItem.media).selectinload(Media.show))
-        .where(ListModel.id == lst.id)
-    )
-    return _format_list(result.scalar_one())
+    return await _begin_import(db, current_user, lst, produce, prepare, make_media)
 
 
 class MdblistListImport(BaseModel):
@@ -660,18 +772,22 @@ class MdblistListImport(BaseModel):
 
 
 def _parse_mdblist_list_ref(raw: str) -> Optional[str]:
-    """Accept a numeric list id, username/slug, or mdblist.com list URL."""
-    raw = raw.strip()
+    """Accept a numeric list id, username/slug, or mdblist.com list URL.
+
+    Slugs keep the list's original name, so they can contain non-ASCII letters
+    (and arrive percent-encoded when copied from a browser).
+    """
+    raw = unquote(raw.strip())
     if raw.isdigit():
         return raw
     match = re.search(
-        r"(?:https?://)?(?:www\.)?mdblist\.com/lists/([A-Za-z0-9_-]+)/([A-Za-z0-9_-]+)(?:[/?#]|$)",
+        r"(?:https?://)?(?:www\.)?mdblist\.com/lists/([^/?#\s]+)/([^/?#\s]+)(?:[/?#]|$)",
         raw,
         flags=re.IGNORECASE,
     )
     if match:
         return f"{match.group(1).lower()}/{match.group(2).lower()}"
-    if re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_-]+", raw):
+    if re.fullmatch(r"[^/?#\s]+/[^/?#\s]+", raw):
         return raw.lower()
     return None
 
@@ -711,17 +827,13 @@ async def import_mdblist_list(
 
     try:
         list_data = await mdblist_client.get_list(mdblist_api_key, list_ref)
-        items = await mdblist_client.get_list_items(
-            mdblist_api_key,
-            list_ref,
-            max_items=500,
-        )
     except Exception as exc:
         raise HTTPException(
             status_code=404,
             detail=f"MDBList list not found (it may be private): {exc}",
         )
 
+    limit = _import_max_items()
     remote_id = list_data.get("id")
     remote_key = f"list:{remote_id}" if remote_id is not None else f"list:{list_ref}"
     existing_list_result = await db.execute(
@@ -741,46 +853,28 @@ async def import_mdblist_list(
         db.add(lst)
         await db.flush()
 
-    existing_media_ids_result = await db.execute(
-        select(ListItem.media_id).where(ListItem.list_id == lst.id)
-    )
-    existing_media_ids = {row[0] for row in existing_media_ids_result}
     external_cache: dict[tuple[str, str], int | None] = {}
 
-    for kind in ("movies", "shows"):
-        for entry in items.get(kind, []):
-            if not isinstance(entry, dict):
-                continue
-            try:
-                async with db.begin_nested():
-                    media = await _resolve_media(
-                        db,
-                        kind,
-                        entry,
-                        tmdb_key,
-                        external_cache,
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "Could not import MDBList %s item %s: %s",
-                    list_ref,
-                    entry.get("id") or entry.get("ids"),
-                    exc,
-                )
-                continue
-            if not media or media.id in existing_media_ids:
-                continue
-            db.add(ListItem(list_id=lst.id, media_id=media.id))
-            existing_media_ids.add(media.id)
+    async def produce(job):
+        # One past the limit, so a list that is exactly at it isn't flagged.
+        items = await mdblist_client.get_list_items(mdblist_api_key, list_ref, max_items=limit + 1)
+        entries = [
+            (kind, entry)
+            for kind in ("movies", "shows")
+            for entry in items.get(kind, [])
+            if isinstance(entry, dict)
+        ]
+        job["truncated"] = len(entries) > limit
+        entries = entries[:limit]
+        job["total"] = len(entries)
+        for pair in entries:
+            yield pair
 
-    await db.commit()
+    async def make_media(db, pair):
+        kind, entry = pair
+        return await _resolve_media(db, kind, entry, tmdb_key, external_cache)
 
-    result = await db.execute(
-        select(ListModel)
-        .options(selectinload(ListModel.items).selectinload(ListItem.media).selectinload(Media.show))
-        .where(ListModel.id == lst.id)
-    )
-    return _format_list(result.scalar_one())
+    return await _begin_import(db, current_user, lst, produce, _identity, make_media)
 
 
 @router.get("/{list_id}")
@@ -908,6 +1002,14 @@ async def update_list(
     if not lst:
         raise HTTPException(status_code=404, detail="List not found")
 
+    if lst.is_watchlist:
+        # The watchlist keeps its name and stays private: it is the hub the
+        # services sync with, not a list to share or label.
+        if body.name is not None and body.name != lst.name:
+            raise HTTPException(status_code=400, detail="The watchlist can't be renamed")
+        if body.privacy_level is not None and body.privacy_level != lst.privacy_level:
+            raise HTTPException(status_code=400, detail="The watchlist is always private")
+
     if body.name is not None:
         lst.name = body.name
     if body.description is not None:
@@ -933,6 +1035,10 @@ async def clear_all_lists(
 ):
     # ListItem rows cascade via the FK's ondelete=CASCADE - no separate delete needed.
     await db.execute(delete(ListModel).where(ListModel.user_id == current_user.id))
+    # The watchlist goes too. Its sync baselines must not outlive it, or the
+    # next reconcile would read every synced title as removed in Scrob and
+    # remove it from the services as well.
+    await reset_watchlist_baselines(db, current_user.id)
     await db.commit()
     return {"status": "ok"}
 
@@ -949,6 +1055,8 @@ async def delete_list(
     lst = result.scalar_one_or_none()
     if not lst:
         raise HTTPException(status_code=404, detail="List not found")
+    if lst.is_watchlist:
+        raise HTTPException(status_code=400, detail="The watchlist can't be deleted")
     await db.delete(lst)
     await db.commit()
     return {"message": "List deleted"}
@@ -1116,10 +1224,9 @@ async def _push_list_item_to_trakt(
 
 
 
-async def _push_list_item_to_mdblist(
+async def _push_watchlist_item_to_mdblist(
     db: AsyncSession,
     user_id: int,
-    list_mdblist_slug: str,
     media: Media,
     season_number: Optional[int] = None,
     remove: bool = False,
@@ -1127,7 +1234,6 @@ async def _push_list_item_to_mdblist(
     # MDBList watchlists have no season granularity - only whole movies/shows apply.
     if (
         season_number is not None
-        or list_mdblist_slug != "__watchlist__"
         or not media.tmdb_id
         or media.media_type not in (MediaType.movie, MediaType.series)
     ):
@@ -1152,6 +1258,21 @@ async def _push_list_item_to_mdblist(
             remove,
             exc,
         )
+
+
+async def _push_watchlist_item(
+    db: AsyncSession,
+    user_id: int,
+    media: Media,
+    season_number: Optional[int] = None,
+    remove: bool = False,
+) -> None:
+    """Live push of a native watchlist edit to every service that has
+    watchlist push on. Best-effort: a failed push is retried by that
+    service's next watchlist reconcile."""
+    await _push_list_item_to_trakt(db, user_id, "__watchlist__", media, season_number=season_number, remove=remove)
+    await _push_watchlist_item_to_mdblist(db, user_id, media, season_number=season_number, remove=remove)
+    await _push_list_item_to_plex_watchlist(db, user_id, media, season_number=season_number, remove=remove)
 
 
 @router.post("/{list_id}/items", status_code=201)
@@ -1264,15 +1385,10 @@ async def add_list_item(
     db.add(item)
     await db.commit()
 
-    if lst.trakt_slug:
+    if lst.is_watchlist:
+        await _push_watchlist_item(db, current_user.id, media, season_number=body.season_number, remove=False)
+    elif lst.trakt_slug:
         await _push_list_item_to_trakt(db, current_user.id, lst.trakt_slug, media, season_number=body.season_number, remove=False)
-        if lst.trakt_slug == "__plex_watchlist__":
-            await _push_list_item_to_plex_watchlist(db, current_user.id, media, season_number=body.season_number, remove=False)
-
-    if lst.mdblist_slug:
-        await _push_list_item_to_mdblist(
-            db, current_user.id, lst.mdblist_slug, media, season_number=body.season_number, remove=False
-        )
 
     item_result = await db.execute(
         select(ListItem)
@@ -1320,14 +1436,9 @@ async def remove_list_item(
     await db.delete(item)
     await db.commit()
 
-    if lst and lst.trakt_slug and media:
+    if lst and media and lst.is_watchlist:
+        await _push_watchlist_item(db, current_user.id, media, season_number=season_number, remove=True)
+    elif lst and lst.trakt_slug and media:
         await _push_list_item_to_trakt(db, current_user.id, lst.trakt_slug, media, season_number=season_number, remove=True)
-        if lst.trakt_slug == "__plex_watchlist__":
-            await _push_list_item_to_plex_watchlist(db, current_user.id, media, season_number=season_number, remove=True)
-
-    if lst and lst.mdblist_slug and media:
-        await _push_list_item_to_mdblist(
-            db, current_user.id, lst.mdblist_slug, media, season_number=season_number, remove=True
-        )
 
     return {"message": "Item removed"}

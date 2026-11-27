@@ -1,10 +1,11 @@
 import json
 import unittest
-from unittest.mock import patch
+from datetime import datetime
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from core import jellyfin
+from core import emby, jellyfin
 
 
 _REAL_ASYNC_CLIENT = httpx.AsyncClient
@@ -76,7 +77,7 @@ class JellyfinShowQueryTests(unittest.IsolatedAsyncioTestCase):
             params = dict(request.url.params)
             requests.append(params)
             start = int(params["StartIndex"])
-            page = [{"Id": f"show-{start + i}"} for i in range(min(500, total - start))]
+            page = [{"Id": f"show-{start + i}"} for i in range(min(jellyfin.PAGE_SIZE, total - start))]
             return httpx.Response(200, json={"Items": page, "TotalRecordCount": total})
 
         transport = httpx.MockTransport(handler)
@@ -90,9 +91,42 @@ class JellyfinShowQueryTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(len(shows), 1200)
-        self.assertEqual(len(requests), 3)
-        self.assertEqual([r["StartIndex"] for r in requests], ["0", "500", "1000"])
+        step = jellyfin.PAGE_SIZE
+        self.assertEqual([r["StartIndex"] for r in requests], [str(i) for i in range(0, total, step)])
         self.assertEqual(requests[0]["IncludeItemTypes"], "Series")
+
+
+class JellyfinTimeoutRetryTests(unittest.IsolatedAsyncioTestCase):
+    """#533: one slow page used to abort the whole pull with a ReadTimeout."""
+
+    async def _run(self, fail_times: int):
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] <= fail_times:
+                raise httpx.ReadTimeout("slow page", request=request)
+            return httpx.Response(200, json={"Items": [{"Id": "e1"}], "TotalRecordCount": 1})
+
+        transport = httpx.MockTransport(handler)
+        with patch.object(
+            jellyfin.httpx, "AsyncClient",
+            side_effect=lambda **kwargs: _REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+        ), patch.object(jellyfin.asyncio, "sleep", AsyncMock()):
+            try:
+                return await jellyfin.get_episodes("lib", "http://jellyfin.local", "t", "u"), calls["n"]
+            except httpx.TimeoutException:
+                return None, calls["n"]
+
+    async def test_a_timed_out_page_is_retried(self) -> None:
+        items, calls = await self._run(fail_times=2)
+        self.assertEqual(items, [{"Id": "e1"}])
+        self.assertEqual(calls, 3)
+
+    async def test_gives_up_after_the_retries_are_used_up(self) -> None:
+        items, calls = await self._run(fail_times=99)
+        self.assertIsNone(items)
+        self.assertEqual(calls, jellyfin.TIMEOUT_RETRIES + 1)
 
 
 class JellyfinSetRatingTests(unittest.IsolatedAsyncioTestCase):
@@ -450,6 +484,61 @@ class JellyfinItemsBatchTests(unittest.IsolatedAsyncioTestCase):
             item = await jellyfin.find_episode_by_ids("http://jellyfin.local", "token", 1399, 1, 1)
 
         self.assertIsNone(item)
+
+
+class MarkWatchedDatePlayedTests(unittest.IsolatedAsyncioTestCase):
+    """#530: Emby 4.x answers a 500 to an ISO DatePlayed, so every watch with a
+    known date failed to push to Emby while Jellyfin accepted it."""
+
+    async def _mark(self, mark_watched, handler):
+        transport = httpx.MockTransport(handler)
+        with patch.object(
+            jellyfin.httpx,
+            "AsyncClient",
+            side_effect=lambda **kwargs: _REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+        ):
+            return await mark_watched(
+                "http://server.local", "token", "user-id", "item-id",
+                played_at=datetime(2026, 10, 30, 9, 5, 7),
+            )
+
+    async def test_jellyfin_sends_iso_date_played(self) -> None:
+        seen: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.url.params.get("DatePlayed"))
+            return httpx.Response(200, json={})
+
+        self.assertTrue(await self._mark(jellyfin.mark_watched, handler))
+        self.assertEqual(seen, ["2026-10-30T09:05:07Z"])
+
+    async def test_emby_sends_compact_date_played(self) -> None:
+        seen: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.url.params.get("DatePlayed"))
+            return httpx.Response(200, json={})
+
+        self.assertTrue(await self._mark(emby.mark_watched, handler))
+        self.assertEqual(seen, ["20261030090507"])
+
+    async def test_retries_without_date_when_server_rejects_it(self) -> None:
+        seen: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.url.params.get("DatePlayed"))
+            if request.url.params.get("DatePlayed"):
+                return httpx.Response(500, text="not a valid DateTime")
+            return httpx.Response(200, json={})
+
+        self.assertTrue(await self._mark(jellyfin.mark_watched, handler))
+        self.assertEqual(seen, ["2026-10-30T09:05:07Z", None])
+
+    async def test_reports_failure_when_server_rejects_both_requests(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401)
+
+        self.assertFalse(await self._mark(jellyfin.mark_watched, handler))
 
 
 if __name__ == "__main__":

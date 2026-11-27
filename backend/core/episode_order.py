@@ -20,8 +20,11 @@ from models.events import WatchEvent
 from models.lists import ListItem
 from models.media import Media
 from models.playback_progress import PlaybackProgress
+from models.global_settings import GlobalSettings
 from models.ratings import Rating
 from models.rewatch import RewatchProgress
+from models.show import Show
+from models.users import UserSettings
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,34 @@ def _date_distance(left: str | None, right: str | None) -> int | None:
         return abs((date.fromisoformat(left) - date.fromisoformat(right)).days)
     except ValueError:
         return None
+
+
+_MIN_PREFIX_MATCH_LENGTH = 4
+
+
+def _titles_match(tmdb_title: str, tvdb_title: str, air_date_distance: int | None) -> bool:
+    """Whether a TMDB and a TVDB episode title (both already normalised) name
+    the same episode, given how far apart their air dates are.
+
+    Distinctive equal titles can bridge broadcast-date drift; the caller
+    accepts only a single candidate. Generic titles and suffix matches still
+    need the existing date guard to avoid confusing unrelated episodes.
+    """
+    if not tmdb_title or not tvdb_title:
+        return False
+    generic = tmdb_title in {"pilot", "special", "specials", "episode", "part"} or bool(
+        re.fullmatch(r"(?:episode|ep|part|chapter|special)(?:[0-9]+|[ivxlcdm]+)", tmdb_title)
+    )
+    if tmdb_title == tvdb_title and not generic:
+        return True
+    if air_date_distance is not None and air_date_distance > 1:
+        return False
+    if tmdb_title == tvdb_title:
+        return True
+    if air_date_distance is None:
+        return False
+    shorter, longer = sorted((tmdb_title, tvdb_title), key=len)
+    return len(shorter) >= _MIN_PREFIX_MATCH_LENGTH and longer.endswith(shorter)
 
 
 # ── Order keys (#174) ────────────────────────────────────────────────────────
@@ -65,6 +96,19 @@ def normalize_order_key(value: str | None) -> str:
     if value == "tvdb":
         return "tvdb:official"
     return value
+
+
+def season_rating_order_values(key: str | None) -> list[str]:
+    """Non-NULL `Rating.episode_order` values a season rating made under `key`
+    may be stored with. Aired order is stored as NULL, which callers match with
+    IS NULL, so it yields an empty list. The pre-#174 `"tvdb"` spelling still
+    exists in old rows and means `"tvdb:official"`."""
+    normalized = normalize_order_key(key)
+    if normalized == ORDER_AIRED:
+        return []
+    if normalized == "tvdb:official":
+        return ["tvdb:official", "tvdb"]
+    return [normalized]
 
 
 def is_aired_order(key: str | None) -> bool:
@@ -287,9 +331,14 @@ async def _order_positions_from_tmdb_group(
 async def _order_positions_from_tvdb_type(
     db: AsyncSession, series_tmdb_id: int, order_key: str, show_tvdb_id: int,
     tmdb_api_key: str, tvdb_api_key: str, cache_ttl: float | None,
+    *, force: bool = False,
+    on_progress: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> list[ShowEpisodePosition]:
     # Every tvdb:* order needs the tvdb-episode-id <-> canonical bridge.
-    await ensure_episode_order_mapping(db, series_tmdb_id, tmdb_api_key, tvdb_api_key)
+    await ensure_episode_order_mapping(
+        db, series_tmdb_id, tmdb_api_key, tvdb_api_key,
+        force=force, on_progress=on_progress,
+    )
     bridge = {
         m.tvdb_id: m
         for m in (await db.execute(
@@ -411,7 +460,8 @@ async def build_order_positions(
                 with db.no_autoflush:
                     await link_show_ids(db, show, tvdb_id=show_tvdb_id)
         rows = await _order_positions_from_tvdb_type(
-            db, series_tmdb_id, key, show_tvdb_id, tmdb_api_key, tvdb_api_key, cache_ttl
+            db, series_tmdb_id, key, show_tvdb_id, tmdb_api_key, tvdb_api_key, cache_ttl,
+            force=force, on_progress=on_progress,
         )
     else:
         raise ValueError(f"Unsupported episode order: {order_key}")
@@ -442,6 +492,90 @@ async def get_episode_order(
         )
     )
     return result.scalar_one_or_none()
+
+
+async def get_default_episode_order(db: AsyncSession, user_id: int) -> str:
+    """The order key new shows start on for this user: their own default, else
+    the server-wide one an admin set, else aired order. Same override chain as
+    the TVDB API key (see routers/shows.py:get_user_tvdb_key).
+
+    Only a fallback for shows the user made no choice for - an explicit
+    per-show UserShowEpisodeOrder row always wins over it."""
+    result = await db.execute(
+        select(UserSettings.default_episode_order).where(UserSettings.user_id == user_id)
+    )
+    own = result.scalar_one_or_none()
+    if own:
+        return normalize_order_key(own)
+    gs_result = await db.execute(
+        select(GlobalSettings.default_episode_order).where(GlobalSettings.id == 1)
+    )
+    return normalize_order_key(gs_result.scalar_one_or_none())
+
+
+def validate_default_episode_order(value: str) -> str:
+    """Like validate_episode_order, but for the server-wide/per-user default,
+    which has to mean something for *every* show. Only aired order and TVDB's
+    official order do: a `tmdb:group:<id>` key names one specific show's
+    episode group, and the other TVDB season types (dvd, absolute, ...) exist
+    for some shows and not others, so as a default they would be stored and
+    then fail per show at position-building time."""
+    key = validate_episode_order(value)
+    if key not in (ORDER_AIRED, "tvdb:official"):
+        raise ValueError(
+            f"Unsupported default episode order: {value} - a default has to be "
+            f"{ORDER_AIRED} or tvdb:official, the two orders every show has"
+        )
+    return key
+
+
+async def series_tmdb_ids_for_media(db: AsyncSession, media_ids: set[int]) -> list[int]:
+    """The series TMDB ids behind a set of Media ids - how the post-sync hook
+    turns "these items are new" into "these shows are new"."""
+    if not media_ids:
+        return []
+    out: set[int] = set()
+    ids = list(media_ids)
+    step = 10_000  # stay well under the 32767 bind-parameter limit
+    for i in range(0, len(ids), step):
+        rows = await db.execute(
+            select(Show.tmdb_id)
+            .join(Media, Media.show_id == Show.id)
+            .where(Media.id.in_(ids[i : i + step]), Show.tmdb_id.isnot(None))
+            .distinct()
+        )
+        out.update(row[0] for row in rows.all())
+    return sorted(out)
+
+
+async def user_series_tmdb_ids(db: AsyncSession, user_id: int) -> list[int]:
+    """Every show the user collected or watched, by series TMDB id - the set the
+    global default applies to. Watch history is included because a show can be
+    tracked (Trakt/Simkl import, manual log) without any local file."""
+    collected = (
+        select(Show.tmdb_id)
+        .join(Media, Media.show_id == Show.id)
+        .join(Collection, Collection.media_id == Media.id)
+        .where(Collection.user_id == user_id, Show.tmdb_id.isnot(None))
+    )
+    watched = (
+        select(Show.tmdb_id)
+        .join(Media, Media.show_id == Show.id)
+        .join(WatchEvent, WatchEvent.media_id == Media.id)
+        .where(WatchEvent.user_id == user_id, Show.tmdb_id.isnot(None))
+    )
+    result = await db.execute(collected.union(watched))
+    return [row[0] for row in result.all()]
+
+
+async def series_tmdb_ids_with_preference(db: AsyncSession, user_id: int) -> set[int]:
+    """Shows the user already made an explicit episode-order choice for."""
+    result = await db.execute(
+        select(UserShowEpisodeOrder.series_tmdb_id).where(
+            UserShowEpisodeOrder.user_id == user_id
+        )
+    )
+    return {row[0] for row in result.all()}
 
 
 async def get_mappings_for_tvdb_season(
@@ -554,6 +688,32 @@ async def get_tmdb_to_tvdb_positions(
     }
 
 
+async def to_simkl_positions(
+    db: AsyncSession,
+    positions: list[tuple[int, int, int]],
+) -> list[tuple[int, int, int]]:
+    """Translate (show_tmdb_id, season, episode) triples, which are TMDB
+    coordinates, into the TVDB ones Simkl indexes episodes by (#453).
+
+    Simkl resolves a show's episodes through TVDB's season layout, so an
+    episode TMDB numbers S2E91 is S2E33 to it and the TMDB coordinates are
+    rejected as not found. Scrob already stores that TMDB -> TVDB mapping for
+    shows whose episodes it has matched; an episode with no stored mapping is
+    returned unchanged, so shows where the two providers agree (or that were
+    never mapped) behave exactly as before. Output has the same length and
+    order as the input."""
+    if not positions:
+        return []
+    by_key = await get_tmdb_to_tvdb_positions(db, sorted({show_id for show_id, _, _ in positions}))
+    translated: list[tuple[int, int, int]] = []
+    for show_id, season, episode in positions:
+        mapping = by_key.get((show_id, season, episode))
+        translated.append(
+            (show_id, mapping.tvdb_season_number, mapping.tvdb_episode_number) if mapping else (show_id, season, episode)
+        )
+    return translated
+
+
 async def _match_tmdb_to_tvdb_episodes(
     tmdb_episodes: list[dict],
     tvdb_episodes: list[dict],
@@ -564,7 +724,7 @@ async def _match_tmdb_to_tvdb_episodes(
     on_progress: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> list[EpisodeOrderMapping]:
     """Matches TMDB episodes to TVDB episodes by external id, falling back to
-    normalised title + air-date within 1 day. Returns new EpisodeOrderMapping
+    unique normalised distinctive title, or title + air-date within 1 day. Returns new EpisodeOrderMapping
     instances (not yet added to any session) - shared by the full-show
     (ensure_episode_order_mapping) and incremental (ensure_episode_order_mapping_for_season)
     computations, which differ only in which episodes they pass in and how
@@ -600,8 +760,10 @@ async def _match_tmdb_to_tvdb_episodes(
         if not title:
             return False
         return any(
-            _normalise_title(candidate.get("name")) == title
-            and (_date_distance(episode.get("air_date"), candidate.get("aired")) or 0) <= 1
+            _titles_match(
+                title, _normalise_title(candidate.get("name")),
+                _date_distance(episode.get("air_date"), candidate.get("aired")),
+            )
             for candidate in tvdb_episodes
         )
 
@@ -668,9 +830,10 @@ async def _match_tmdb_to_tvdb_episodes(
                 candidate
                 for candidate in tvdb_episodes
                 if candidate.get("id") not in used_tvdb_ids
-                and title
-                and _normalise_title(candidate.get("name")) == title
-                and (_date_distance(episode.get("air_date"), candidate.get("aired")) or 0) <= 1
+                and _titles_match(
+                    title, _normalise_title(candidate.get("name")),
+                    _date_distance(episode.get("air_date"), candidate.get("aired")),
+                )
             ]
             if len(candidates) == 1:
                 match = candidates[0]
@@ -1081,6 +1244,7 @@ async def _merge_episode_media(
     divergent: Media,
     *,
     keep_divergent_files: bool = False,
+    rekey_comments: bool = True,
 ) -> None:
     """Moves every reference to `divergent` onto `canonical`, deduplicating
     against rows canonical already has where a table's uniqueness would
@@ -1169,18 +1333,21 @@ async def _merge_episode_media(
 
     # Comment: not Media-FK'd at all (keyed by media_type/tmdb_id/season/episode
     # directly) - re-key rows matching the divergent identity to the canonical one.
-    await db.execute(
-        update(Comment).where(
-            Comment.media_type == "episode",
-            Comment.tmdb_id == divergent.tmdb_id,
-            Comment.season_number == divergent.season_number,
-            Comment.episode_number == divergent.episode_number,
-        ).values(
-            tmdb_id=canonical.tmdb_id,
-            season_number=canonical.season_number,
-            episode_number=canonical.episode_number,
+    # Skipped for a row with no identity of its own (a bare stub): matching on its
+    # NULL tmdb_id would sweep up other shows' comments.
+    if rekey_comments:
+        await db.execute(
+            update(Comment).where(
+                Comment.media_type == "episode",
+                Comment.tmdb_id == divergent.tmdb_id,
+                Comment.season_number == divergent.season_number,
+                Comment.episode_number == divergent.episode_number,
+            ).values(
+                tmdb_id=canonical.tmdb_id,
+                season_number=canonical.season_number,
+                episode_number=canonical.episode_number,
+            )
         )
-    )
 
     await db.flush()
     await db.delete(divergent)
