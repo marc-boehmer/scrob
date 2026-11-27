@@ -11,7 +11,8 @@ from sqlalchemy import delete, func, or_, and_
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from jose import jwt, JWTError
+import jwt
+from jwt import PyJWTError
 
 from db import get_db
 from models.base import UserRole
@@ -32,7 +33,7 @@ from core.security import (
     ALGORITHM,
 )
 from core.config import settings as app_settings
-from core.email import send_activation_email, send_password_reset_email
+from core.email import send_activation_email, send_email_change_email, send_password_reset_email
 from core.url_validator import validate_service_url
 from core.limiter import limiter
 from core.backup import restore_backup
@@ -41,6 +42,7 @@ import schemas
 from dependencies import get_current_user, oauth2_scheme, DEVICE_TOKEN_TYPE
 from sqlalchemy.orm import selectinload
 from fastapi import File, UploadFile
+from core.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -134,47 +136,6 @@ async def forgot_password(request: Request, body: schemas.ForgotPasswordRequest,
     return {"message": "If that email is registered, a reset link has been sent."}
 
 
-@router.post("/change-email")
-@limiter.limit("5/minute")
-async def change_email(
-    request: Request,
-    body: schemas.ChangeEmailRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    if not app_settings.smtp_address:
-        raise HTTPException(status_code=503, detail="Email confirmation is not configured.")
-
-    email = str(body.email).strip().lower()
-    if email == current_user.email.lower():
-        raise HTTPException(status_code=400, detail="That is already your email address.")
-
-    existing = await db.execute(
-        select(User).where(func.lower(User.email) == email, User.id != current_user.id)
-    )
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="That email address is already in use.")
-
-    await db.execute(delete(EmailActivation).where(EmailActivation.user_id == current_user.id))
-    token = secrets.token_urlsafe(32)
-    activation = EmailActivation(user_id=current_user.id, email=email, token=token)
-    db.add(activation)
-    await db.commit()
-
-    try:
-        await send_activation_email(email, token, email_change=True)
-    except Exception as exc:
-        logger.exception("Failed to send email-change confirmation for user %s", current_user.id)
-        await db.delete(activation)
-        await db.commit()
-        raise HTTPException(
-            status_code=502,
-            detail="Could not send the confirmation email. Please try again.",
-        ) from exc
-
-    return {"message": "A confirmation link has been sent to your new email address."}
-
-
 @router.post("/reset-password/{token}")
 @limiter.limit("10/minute")
 async def reset_password(
@@ -206,6 +167,19 @@ async def reset_password(
     return {"message": "Password updated successfully."}
 
 
+async def _find_user_for_login(db: AsyncSession, typed: str) -> User | None:
+    """Resolve the username typed on the login form (#427). Surrounding spaces
+    (mobile keyboard autocomplete) are ignored and case doesn't matter, unless
+    two accounts differ only by case - an exact match always wins, and an
+    ambiguous case-insensitive match finds nobody rather than guessing."""
+    typed = typed.strip()
+    exact = (await db.execute(select(User).where(User.username == typed))).scalar_one_or_none()
+    if exact:
+        return exact
+    loose = (await db.execute(select(User).where(func.lower(User.username) == typed.lower()).limit(2))).scalars().all()
+    return loose[0] if len(loose) == 1 else None
+
+
 @router.post("/register", response_model=schemas.User)
 @limiter.limit("10/minute")
 async def register(request: Request, user_in: schemas.UserCreate, db: AsyncSession = Depends(get_db)):
@@ -215,7 +189,9 @@ async def register(request: Request, user_in: schemas.UserCreate, db: AsyncSessi
             detail="Registrations are disabled.",
         )
 
-    query = select(User).where((User.email == user_in.email) | (User.username == user_in.username))
+    query = select(User).where(
+        (User.email == user_in.email) | (func.lower(User.username) == user_in.username.strip().lower())
+    )
     result = await db.execute(query)
     if result.scalar_one_or_none():
         raise HTTPException(
@@ -229,7 +205,7 @@ async def register(request: Request, user_in: schemas.UserCreate, db: AsyncSessi
     email_confirmed = not app_settings.require_email_validation
     new_user = User(
         email=user_in.email,
-        username=user_in.username,
+        username=user_in.username.strip(),
         password_hash=get_password_hash(user_in.password),
         api_key=_generate_api_key(),
         # Never take the role from the request body: role == "admin" grants
@@ -280,9 +256,7 @@ async def login(
             detail="Password login is disabled. Please use SSO.",
         )
 
-    query = select(User).where(User.username == form_data.username)
-    result = await db.execute(query)
-    user = result.scalar_one_or_none()
+    user = await _find_user_for_login(db, form_data.username)
 
     if not user or not user.password_hash or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(
@@ -311,26 +285,57 @@ async def login(
     )
     return {"access_token": access_token, "token_type": "bearer", "expires_in": int(lifetime.total_seconds())}
 
+async def _email_in_use(db: AsyncSession, email: str, exclude_user_id: int) -> bool:
+    result = await db.execute(
+        select(User.id).where(func.lower(User.email) == email.lower(), User.id != exclude_user_id)
+    )
+    return result.first() is not None
+
+
+async def _apply_activation(db: AsyncSession, user: User, activation: EmailActivation) -> bool:
+    """Confirms the user's email via a clicked activation link. A link for a
+    different address than the one on file is a pending email change (#471):
+    the address switches only now, once the new inbox is proven. Returns False
+    when that address got taken by someone else in the meantime."""
+    if activation.email.lower() != user.email.lower():
+        if await _email_in_use(db, activation.email, user.id):
+            return False
+        user.email = activation.email
+    user.email_confirmed = True
+    return True
+
+
 @router.get("/activate/{token}", include_in_schema=False)
 async def activate_email(token: str, db: AsyncSession = Depends(get_db)):
     frontend = app_settings.server_url
-    try:
-        email_changed = await _complete_email_activation(token, db)
-    except HTTPException as exc:
-        reason = "expired" if exc.detail == "expired" else "invalid"
-        return RedirectResponse(f"{frontend}/auth/activate/{token}?error={reason}")
-    suffix = "&email_change=true" if email_changed else ""
-    return RedirectResponse(f"{frontend}/auth/activate/{token}?success=true{suffix}")
+    result = await db.execute(select(EmailActivation).where(EmailActivation.token == token))
+    activation = result.scalar_one_or_none()
+
+    if not activation:
+        return RedirectResponse(f"{frontend}/auth/activate/{token}?error=invalid")
+
+    age = datetime.now(timezone.utc) - activation.created_at.replace(tzinfo=timezone.utc)
+    if age > timedelta(hours=24):
+        await db.delete(activation)
+        await db.commit()
+        return RedirectResponse(f"{frontend}/auth/activate/{token}?error=expired")
+
+    user_result = await db.execute(select(User).where(User.id == activation.user_id))
+    user = user_result.scalar_one_or_none()
+    taken = False
+    if user:
+        taken = not await _apply_activation(db, user, activation)
+    await db.delete(activation)
+    await db.commit()
+
+    if taken:
+        return RedirectResponse(f"{frontend}/auth/activate/{token}?error=taken")
+    return RedirectResponse(f"{frontend}/auth/activate/{token}?success=true")
 
 
 @router.post("/activate/{token}", include_in_schema=False)
 async def activate_email_api(token: str, db: AsyncSession = Depends(get_db)):
     """JSON endpoint used by the frontend activation page."""
-    email_changed = await _complete_email_activation(token, db)
-    return {"success": True, "email_changed": email_changed}
-
-
-async def _complete_email_activation(token: str, db: AsyncSession) -> bool:
     result = await db.execute(select(EmailActivation).where(EmailActivation.token == token))
     activation = result.scalar_one_or_none()
 
@@ -345,31 +350,15 @@ async def _complete_email_activation(token: str, db: AsyncSession) -> bool:
 
     user_result = await db.execute(select(User).where(User.id == activation.user_id))
     user = user_result.scalar_one_or_none()
-    email_changed = False
+    taken = False
     if user:
-        email_changed = activation.email.lower() != user.email.lower()
-        if email_changed:
-            existing = await db.execute(
-                select(User).where(
-                    func.lower(User.email) == activation.email.lower(),
-                    User.id != user.id,
-                )
-            )
-            if existing.scalar_one_or_none():
-                await db.delete(activation)
-                await db.commit()
-                raise HTTPException(status_code=400, detail="email already in use")
-            user.email = activation.email
-        user.email_confirmed = True
+        taken = not await _apply_activation(db, user, activation)
     await db.delete(activation)
-    try:
-        await db.commit()
-    except IntegrityError as exc:
-        await db.rollback()
-        await db.execute(delete(EmailActivation).where(EmailActivation.token == token))
-        await db.commit()
-        raise HTTPException(status_code=400, detail="email already in use") from exc
-    return email_changed
+    await db.commit()
+
+    if taken:
+        raise HTTPException(status_code=400, detail="taken")
+    return {"success": True}
 
 
 @router.get("/has-users")
@@ -417,7 +406,7 @@ async def renew_session(
 ):
     try:
         payload = jwt.decode(token, app_settings.secret_key, algorithms=[ALGORITHM])
-    except JWTError:
+    except PyJWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate credentials")
     # Only plain login tokens slide; typed ones (device grants, 2FA) never do.
     if payload.get("type"):
@@ -477,6 +466,9 @@ async def _settings_response(settings: UserSettings, db: AsyncSession) -> schema
     data.has_global_tvdb_key = bool(gs and gs.tvdb_api_key)
     data.has_effective_tvdb_key = bool(settings.tvdb_api_key) or data.has_global_tvdb_key
     data.has_global_mdblist_key = bool(gs and getattr(gs, "mdblist_api_key", None))
+    # What default_episode_order = NULL resolves to, so the settings page can
+    # label its "server default" option with the order it actually inherits.
+    data.server_episode_order = (gs.default_episode_order if gs else None) or "tmdb"
     # Same "all 4 fields set, user config first" rule as _effective_radarr/
     # _effective_sonarr in routers/media.py - inlined rather than imported to
     # avoid a routers.media <-> routers.auth cross-import.
@@ -526,7 +518,7 @@ async def update_user_settings(
         db.add(settings)
 
     # Computed read-only fields; never write them back
-    READ_ONLY_FIELDS = {"trakt_connected", "simkl_connected", "simkl_auth_v1", "wetrakr_connected", "mdblist_connected", "bingebase_connected", "has_rpdb_key", "has_global_tmdb_key", "has_effective_tmdb_key", "has_global_tvdb_key", "has_effective_tvdb_key", "has_global_mdblist_key"}
+    READ_ONLY_FIELDS = {"trakt_connected", "simkl_connected", "simkl_auth_v1", "wetrakr_connected", "mdblist_connected", "bingebase_connected", "has_rpdb_key", "has_global_tmdb_key", "has_effective_tmdb_key", "has_global_tvdb_key", "has_effective_tvdb_key", "has_global_mdblist_key", "server_episode_order"}
     update_data = {k: v for k, v in settings_in.model_dump(exclude_unset=True).items() if k not in READ_ONLY_FIELDS}
 
     new_rpdb_key = update_data.get("rpdb_api_key")
@@ -553,6 +545,23 @@ async def update_user_settings(
                 detail="TVDB rejected the key" + (" / PIN" if new_tvdb_pin else "")
                 + ". A subscriber-supported key needs its account PIN; a free project key needs no PIN.",
             )
+
+    # Stored normalised, so every reader can compare order keys rather than
+    # the legacy "tmdb"/"tvdb" spellings. A TVDB order needs a TVDB key, same
+    # requirement as the per-show switch in routers/shows.py.
+    if update_data.get("default_episode_order"):
+        from core.episode_order import validate_default_episode_order
+
+        try:
+            order_key = validate_default_episode_order(update_data["default_episode_order"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        update_data["default_episode_order"] = order_key
+        if order_key.startswith("tvdb:"):
+            from routers.shows import get_user_tvdb_key
+
+            if not await get_user_tvdb_key(db, current_user.id):
+                raise HTTPException(status_code=400, detail="TVDB API key not configured")
 
     if "mdblist_api_key" in update_data and update_data["mdblist_api_key"]:
         from core import mdblist
@@ -702,7 +711,8 @@ async def create_connection(
         sync_playback=body.sync_playback,
         push_watched=body.push_watched,
         push_collection=body.push_collection if cloud_media_provider else False,
-        push_playback=body.push_playback if cloud_media_provider else False,
+        # Plex takes resume points too (core/plex_progress.py).
+        push_playback=body.push_playback if cloud_media_provider or body.type == "plex" else False,
         push_ratings=body.push_ratings if not cloud_media_provider else False,
         auto_sync_interval=body.auto_sync_interval,
         auto_push_interval=body.auto_push_interval,
@@ -793,7 +803,10 @@ async def update_connection(
             update_data["push_playback"] = update_data.get("push_playback", conn.push_playback)
             update_data["push_collection"] = update_data.get("push_collection", conn.push_collection)
         else:
-            update_data["push_playback"] = False
+            if conn.type == "plex":
+                update_data["push_playback"] = update_data.get("push_playback", conn.push_playback)
+            else:
+                update_data["push_playback"] = False
             update_data["push_collection"] = False
 
     # Re-enabling a watchlist sync direction starts from a clean bootstrap: a
@@ -943,6 +956,50 @@ async def change_password(
     current_user.password_hash = get_password_hash(password_in.new_password)
     await db.commit()
     return {"status": "password updated"}
+
+@router.post("/change-email")
+@limiter.limit("5/minute")
+async def change_email(
+    request: Request,
+    email_in: schemas.EmailChange,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Change the account email (#471). Requires the current password when the
+    account has one (an OIDC-created account with none can change it directly,
+    same as change-password). With email validation on, the new address is
+    only switched in once its confirmation link is clicked; otherwise it
+    applies immediately."""
+    if current_user.password_hash is not None:
+        if not email_in.current_password or not verify_password(email_in.current_password, current_user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Incorrect current password",
+            )
+
+    new_email = email_in.new_email
+    if new_email.lower() == current_user.email.lower():
+        raise HTTPException(status_code=400, detail="That is already your email address")
+    if await _email_in_use(db, new_email, current_user.id):
+        raise HTTPException(status_code=400, detail="That email address is already in use")
+
+    if not app_settings.require_email_validation:
+        current_user.email = new_email
+        await db.commit()
+        return {"status": "email updated", "email": new_email}
+
+    # Only the latest request stays valid.
+    await db.execute(delete(EmailActivation).where(EmailActivation.user_id == current_user.id))
+    token = secrets.token_urlsafe(32)
+    db.add(EmailActivation(user_id=current_user.id, email=new_email, token=token))
+    await db.commit()
+    try:
+        await send_email_change_email(new_email, token)
+    except Exception as exc:
+        logger.error("Failed to send email change confirmation to %s: %s", new_email, exc)
+        raise HTTPException(status_code=502, detail="Could not send the confirmation email")
+    return {"status": "confirmation sent", "email": new_email}
+
 
 @router.post("/api-key/regenerate", response_model=schemas.User)
 async def regenerate_api_key(
@@ -1648,7 +1705,7 @@ async def verify_2fa_login(
             raise credentials_exception
         user_id = int(payload["sub"])
         remember = bool(payload.get("remember"))
-    except (JWTError, ValueError, KeyError):
+    except (PyJWTError, ValueError, KeyError):
         raise credentials_exception
     lifetime = session_lifetime(remember)
 
@@ -1699,7 +1756,7 @@ async def verify_2fa_login(
 # Connected Apps. The resulting token is scope-limited - dependencies.py
 # rejects it on every account/security endpoint (see DEVICE_TOKEN_TYPE).
 #
-# All timestamps here are naive UTC (datetime.utcnow), matching the
+# All timestamps here are naive UTC (utcnow), matching the
 # oauth_device_grants columns, so comparisons never mix aware/naive.
 
 DEVICE_CODE_TTL = timedelta(minutes=15)
@@ -1772,7 +1829,7 @@ async def device_code(
         raise HTTPException(status_code=400, detail="Unsupported scope")
     client_name = (body.client_name or "").strip()[:120] or "Unknown app"
 
-    now = datetime.utcnow()
+    now = utcnow()
     # Opportunistic housekeeping so the table doesn't accumulate dead rows.
     await db.execute(
         delete(OAuthDeviceGrant).where(
@@ -1846,7 +1903,7 @@ async def _device_token_exchange(db: AsyncSession, device_code_raw: str) -> JSON
     if grant is None:
         return _oauth_error("invalid_grant")
 
-    now = datetime.utcnow()
+    now = utcnow()
 
     # The device_code is single-use: once tokens have been minted the client
     # must use its refresh token.
@@ -1907,14 +1964,14 @@ async def _device_token_refresh(db: AsyncSession, refresh_raw: str) -> JSONRespo
         )
         stolen = replay.scalar_one_or_none()
         if stolen is not None and stolen.revoked_at is None:
-            stolen.revoked_at = datetime.utcnow()
+            stolen.revoked_at = utcnow()
             await db.commit()
         return _oauth_error("invalid_grant")
 
     if grant.revoked_at is not None or grant.status != "approved":
         return _oauth_error("invalid_grant")
 
-    now = datetime.utcnow()
+    now = utcnow()
     new_refresh = generate_opaque_token()
     grant.prev_refresh_token_hash = grant.refresh_token_hash
     grant.refresh_token_hash = hash_opaque_token(new_refresh)
@@ -1932,7 +1989,7 @@ async def _load_pending_grant(db: AsyncSession, user_code: str) -> OAuthDeviceGr
         raise HTTPException(status_code=404, detail="Unknown or expired code")
     result = await db.execute(select(OAuthDeviceGrant).where(OAuthDeviceGrant.user_code == code))
     grant = result.scalar_one_or_none()
-    if grant is None or grant.status != "pending" or datetime.utcnow() >= grant.expires_at:
+    if grant is None or grant.status != "pending" or utcnow() >= grant.expires_at:
         raise HTTPException(status_code=404, detail="Unknown or expired code")
     return grant
 
@@ -1972,7 +2029,7 @@ async def device_approve(
     grant.user_id = current_user.id
     if action == "approve":
         grant.status = "approved"
-        grant.approved_at = datetime.utcnow()
+        grant.approved_at = utcnow()
         chosen_name = (body.name or "").strip()[:120]
         if chosen_name:
             grant.client_name = chosen_name
@@ -2015,6 +2072,6 @@ async def revoke_device_grant(
     if grant is None:
         raise HTTPException(status_code=404, detail="Not found")
     if grant.revoked_at is None:
-        grant.revoked_at = datetime.utcnow()
+        grant.revoked_at = utcnow()
         await db.commit()
     return {"status": "revoked"}

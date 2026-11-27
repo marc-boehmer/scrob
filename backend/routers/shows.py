@@ -1,9 +1,11 @@
 import asyncio
+import httpx
+import time
 from datetime import datetime, date, timezone
 from pydantic import BaseModel
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy import select, update, func, case, cast as sa_cast, Text, or_, and_
+from sqlalchemy import select, update, delete, func, case, cast as sa_cast, Text, or_, and_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
 
@@ -21,16 +23,22 @@ from models.sync import SyncJob, SyncStatus
 from models.users import User, UserSettings
 from models.episode_order import EpisodeOrderMapping, UserShowEpisodeOrder
 from models.rewatch import RewatchProgress
-from routers.media import format_media, get_user_tmdb_key, check_tmdb_key, enrich_with_state, refresh_technical_data, _extract_show_content_rating, get_where_to_watch, _effective_sonarr, _get_global_settings, require_anon_nav_allowed
+from routers.media import format_media, get_user_tmdb_key, check_tmdb_key, enrich_with_state, refresh_technical_data, _extract_show_content_rating, get_where_to_watch, _effective_sonarr, _get_global_settings, require_anon_nav_allowed, MyRatingValue, my_rating_value_sql
 
 from dependencies import get_current_user, get_current_user_or_api_key, get_optional_user_or_api_key, ANON_USER_ID
 from core import tmdb
 from core import tvdb as tvdb_client
 from core.episode_order import (
     ensure_episode_order_mapping,
+    get_default_episode_order,
+    series_tmdb_ids_for_media,
+    validate_default_episode_order,
     get_episode_order,
     reconcile_divergent_episode_media,
+    series_tmdb_ids_with_preference,
+    user_series_tmdb_ids,
     validate_episode_order,
+    season_rating_order_values,
     ORDER_AIRED,
     normalize_order_key,
     is_aired_order,
@@ -47,8 +55,11 @@ from core.enrichment import (
     create_media_safely,
     apply_media_change_safely,
     is_unmapped_tvdb_episode,
+    is_ghost_candidate,
+    unreferenced_media_ids,
 )
 from core.identity import find_media, link_show_ids
+from core.watch_stats import WatchStats, get_watch_stats
 from core.rewatch import (
     capped_season_episode_counts,
     total_aired_episodes,
@@ -67,6 +78,23 @@ from core.translations import (
 )
 
 router = APIRouter()
+
+
+async def _last_watched_by_media(db: AsyncSession, user_id: int, media_ids: list[int]) -> dict[int, str]:
+    """media_id -> ISO time of the user's most recent dated play (#317)."""
+    if not media_ids:
+        return {}
+    rows = await db.execute(
+        select(WatchEvent.media_id, func.max(WatchEvent.watched_at))
+        .where(
+            WatchEvent.user_id == user_id,
+            WatchEvent.completed == True,
+            WatchEvent.watched_at.isnot(None),
+            WatchEvent.media_id.in_(media_ids),
+        )
+        .group_by(WatchEvent.media_id)
+    )
+    return {media_id: at.isoformat() for media_id, at in rows.all()}
 
 
 async def get_user_tvdb_key(db: AsyncSession, user_id: int) -> str | None:
@@ -103,6 +131,53 @@ async def _find_local_show_for_tvdb(
         conditions.append(ShowModel.tmdb_id == series_tmdb_id)
     result = await db.execute(select(ShowModel).where(or_(*conditions)))
     return result.scalar_one_or_none()
+
+
+async def _resolve_tvdb_show(
+    db: AsyncSession,
+    tvdb_id: int,
+    show_data: dict,
+    series_tmdb_id: int | None,
+    tmdb_api_key: str | None,
+) -> tuple[ShowModel, int | None]:
+    """The local Show behind a TVDB page, created on first visit.
+
+    Returns (show, series_tmdb_id). A TVDB series can cross-link a TMDB id
+    whose entry has since been deleted (#585): TMDB answers 404 and the page
+    would 500 even though TVDB has everything it needs. In that case the show
+    is built from TVDB alone and the dead TMDB id is dropped (None) so callers
+    don't keep chasing it."""
+    show = await _find_local_show_for_tvdb(db, tvdb_id, series_tmdb_id)
+    if show is not None:
+        # A TVDB-only local show must not resurrect a dead cross-linked id.
+        return show, show.tmdb_id
+    if series_tmdb_id:
+        from routers.webhooks import _find_or_create_show
+        try:
+            return await _find_or_create_show(db, series_tmdb_id, tmdb_api_key), series_tmdb_id
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != 404:
+                raise
+            series_tmdb_id = None
+    # Show has no (live) TMDB presence - mirrors the "resolve an unmatched
+    # show to TVDB" flow in routers/sync.py.
+    show = ShowModel(
+        tvdb_id=tvdb_id,
+        tmdb_id=None,
+        canonical_source="tvdb",
+        title=show_data.get("title") or f"TVDB #{tvdb_id}",
+        original_title=show_data.get("original_title"),
+        overview=show_data.get("overview"),
+        poster_path=show_data.get("poster_path"),
+        backdrop_path=show_data.get("backdrop_path"),
+        status=show_data.get("status"),
+        first_air_date=show_data.get("first_air_date"),
+        last_air_date=show_data.get("last_air_date"),
+        tmdb_data={"seasons": show_data.get("seasons", []), "genres": show_data.get("genres", []), "source": "tvdb"},
+    )
+    db.add(show)
+    await db.flush()
+    return show, series_tmdb_id
 
 
 async def _enrich_tvdb_seasons(
@@ -244,6 +319,7 @@ async def list_shows(
     year: list[int] = Query(default=[]),
     status: list[str] = Query(default=[]),
     watched: list[str] = Query(default=[]),
+    my_rating: list[MyRatingValue] = Query(default=[]),
     # in_list = in|out: membership of any of the user's lists (#255;
     # season-level list items live on the same series Media row and count too).
     in_list: str | None = Query(None),
@@ -332,6 +408,29 @@ async def list_shows(
         else:
             base_query = base_query.where(ShowModel.id.notin_(select(watched_show_ids)))
 
+    # A whole-show rating is stored against a MediaType.series row rather than
+    # the Show row. Match by either stable provider id so TVDB-only shows work
+    # as well as TMDB-backed shows.
+    rated_series = aliased(Media)
+    user_rating = (
+        select(func.max(Rating.rating))
+        .join(rated_series, Rating.media_id == rated_series.id)
+        .where(
+            rated_series.media_type == MediaType.series,
+            Rating.user_id == current_user.id,
+            Rating.season_number.is_(None),
+            Rating.rating.isnot(None),
+            or_(
+                and_(ShowModel.tmdb_id.isnot(None), rated_series.tmdb_id == ShowModel.tmdb_id),
+                and_(ShowModel.tvdb_id.isnot(None), rated_series.tvdb_id == ShowModel.tvdb_id),
+            ),
+        )
+        .correlate(ShowModel)
+        .scalar_subquery()
+    )
+    if my_rating:
+        base_query = base_query.where(my_rating_value_sql(user_rating).in_(my_rating))
+
     # Count total
     count_query = select(func.count()).select_from(base_query.subquery())
     total_result = await db.execute(count_query)
@@ -341,6 +440,12 @@ async def list_shows(
     # Sort and Paginate
     if sort == "rating":
         q = base_query.order_by(ShowModel.tmdb_rating.desc().nulls_last())
+    elif sort == "user_rating":
+        q = base_query.order_by(
+            user_rating.desc().nulls_last(),
+            ShowModel.tmdb_rating.desc().nulls_last(),
+            ShowModel.id.desc(),
+        )
     elif sort == "release_date":
         q = base_query.order_by(ShowModel.first_air_date.desc().nulls_last())
     elif sort == "created_at":
@@ -470,6 +575,216 @@ class EpisodeOrderRequest(BaseModel):
     force_refresh: bool = False
 
 
+async def _apply_order_to_show(
+    db: AsyncSession,
+    user_id: int,
+    series_tmdb_id: int,
+    order_key: str,
+    *,
+    order_label: str | None = None,
+    tmdb_api_key: str | None = None,
+    tvdb_api_key: str | None = None,
+    force: bool = False,
+    on_progress=None,
+) -> tuple[dict | None, int | None]:
+    """Put one show on one order for one user: build the positions that order
+    needs and point the preference row at it. Shared by the per-show switch,
+    the bulk apply and the post-sync hook so all three leave a show in the
+    same state. Returns (position summary, tvdb id), both None for aired
+    order, which needs neither."""
+    if is_aired_order(order_key):
+        # Aired order needs no positions, but it is still stored as a row
+        # rather than as the absence of one: "deliberately put back on aired
+        # order" has to be distinguishable from "never chose", or the
+        # post-sync default would re-map the first case behind the user's
+        # back (#379 review). Every reader normalises, so an aired row and no
+        # row behave identically everywhere else.
+        preference = await get_episode_order(db, user_id, series_tmdb_id)
+        if preference:
+            preference.episode_order = ORDER_AIRED
+            preference.order_label = order_label
+        else:
+            db.add(UserShowEpisodeOrder(
+                user_id=user_id,
+                series_tmdb_id=series_tmdb_id,
+                episode_order=ORDER_AIRED,
+                order_label=order_label,
+                tvdb_id=None,
+            ))
+        return None, None
+
+    show_result = await db.execute(
+        select(ShowModel).where(ShowModel.tmdb_id == series_tmdb_id)
+    )
+    local_show = show_result.scalar_one_or_none()
+
+    summary = await build_order_positions(
+        db, series_tmdb_id, order_key,
+        show=local_show,
+        tmdb_api_key=tmdb_api_key,
+        tvdb_api_key=tvdb_api_key,
+        force=force,
+        on_progress=on_progress,
+    )
+
+    # `build_order_positions` may have resolved and set the tvdb id on
+    # local_show; pick it up for the preference row.
+    tvdb_id = local_show.tvdb_id if local_show else None
+
+    preference = await get_episode_order(db, user_id, series_tmdb_id)
+    if preference:
+        preference.episode_order = order_key
+        preference.order_label = order_label
+        preference.tvdb_id = tvdb_id
+    else:
+        db.add(UserShowEpisodeOrder(
+            user_id=user_id,
+            series_tmdb_id=series_tmdb_id,
+            episode_order=order_key,
+            order_label=order_label,
+            tvdb_id=tvdb_id,
+        ))
+
+    if local_show and order_key.startswith("tvdb:") and tvdb_id:
+        # #162: TMDB<->TVDB positions are now known - merge any episode
+        # previously tracked under the "wrong" (TVDB-native) numbering
+        # into its canonical TMDB-numbered row.
+        await reconcile_divergent_episode_media(db, local_show)
+
+    return summary, tvdb_id
+
+
+async def _run_default_episode_order(
+    user_id: int,
+    job_id: int,
+    series_tmdb_ids: list[int],
+    order_key: str,
+    tmdb_api_key: str | None,
+    tvdb_api_key: str | None,
+) -> None:
+    """Apply one episode order to many shows. Shows are done one at a time:
+    building a show's positions already fans out a TMDB request per episode,
+    so this loop is the throttle. One show's failure (no such order for it, a
+    dead request) is recorded and skipped rather than failing the whole run."""
+    async_session = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    async with async_session() as db:
+        await db.execute(update(SyncJob).where(SyncJob.id == job_id).values(
+            status=SyncStatus.running,
+            total_items=len(series_tmdb_ids),
+            processed_items=0,
+            current_step=f"Applying {order_key} episode order",
+        ))
+        await db.commit()
+
+        done = 0
+        switched = 0
+        failures: list[dict] = []
+
+        for series_tmdb_id in series_tmdb_ids:
+            try:
+                await _apply_order_to_show(
+                    db, user_id, series_tmdb_id, order_key,
+                    tmdb_api_key=tmdb_api_key, tvdb_api_key=tvdb_api_key,
+                )
+                await db.commit()
+                switched += 1
+            except Exception as exc:
+                await db.rollback()
+                failures.append({"series_tmdb_id": series_tmdb_id, "error": str(exc)[:200]})
+
+            done += 1
+            if done % 5 == 0 or done == len(series_tmdb_ids):
+                await db.execute(update(SyncJob).where(SyncJob.id == job_id).values(
+                    processed_items=done, updated_at=func.now(),
+                ))
+                await db.commit()
+
+        await db.execute(update(SyncJob).where(SyncJob.id == job_id).values(
+            status=SyncStatus.completed,
+            processed_items=done,
+            stats={"episode_order": order_key, "switched": switched, "failed": len(failures)},
+            warnings=failures or None,
+        ))
+        await db.commit()
+
+
+# One attempt per (user, show) per TTL for the post-sync hook below, whatever
+# its outcome. A show the default can't be applied to - TVDB has no match for
+# it, a request died - would otherwise re-run its whole per-episode resolution
+# on the next sync that sees it, for a result that is not going to change
+# within minutes. Per-process, like the webhook guards in core/episode_order.
+_DEFAULT_ORDER_ATTEMPT_TTL = 24 * 60 * 60
+_default_order_attempts: dict[tuple[int, int], float] = {}
+
+
+def _reset_default_order_attempts() -> None:
+    """Test hook - forget recent attempts."""
+    _default_order_attempts.clear()
+
+
+def _claim_default_order_attempt(user_id: int, series_tmdb_id: int) -> bool:
+    """True if this (user, show) hasn't been tried within the TTL, claiming it
+    for this run."""
+    now = time.monotonic()
+    for key, deadline in list(_default_order_attempts.items()):
+        if deadline <= now:
+            _default_order_attempts.pop(key, None)
+    key = (user_id, series_tmdb_id)
+    if _default_order_attempts.get(key, 0) > now:
+        return False
+    _default_order_attempts[key] = now + _DEFAULT_ORDER_ATTEMPT_TTL
+    return True
+
+
+async def apply_default_episode_order_to_new_shows(user_id: int, new_media_ids: set[int]) -> None:
+    """Fire-and-forget hook for the end of a sync: put the shows this sync just
+    added on the user's default order.
+
+    Scoped to what the sync added, and skipping shows that already have a
+    preference row (an explicit aired-order choice is stored as a row too), so
+    a choice the user made on purpose is never re-mapped behind their back."""
+    if not new_media_ids:
+        return
+
+    async_session = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    try:
+        async with async_session() as db:
+            order_key = await get_default_episode_order(db, user_id)
+            if is_aired_order(order_key):
+                # Aired order is what a show without a preference row already
+                # behaves as - nothing to write.
+                return
+            tmdb_api_key, tvdb_api_key = await asyncio.gather(
+                get_user_tmdb_key(db, user_id), get_user_tvdb_key(db, user_id),
+            )
+            if not check_tmdb_key(tmdb_api_key):
+                return
+            if order_key.startswith("tvdb:") and not tvdb_api_key:
+                return
+            already_chosen = await series_tmdb_ids_with_preference(db, user_id)
+            pending = [
+                sid for sid in await series_tmdb_ids_for_media(db, new_media_ids)
+                if sid not in already_chosen and _claim_default_order_attempt(user_id, sid)
+            ]
+            if not pending:
+                return
+
+        for series_tmdb_id in pending:
+            async with async_session() as db:
+                try:
+                    await _apply_order_to_show(
+                        db, user_id, series_tmdb_id, order_key,
+                        tmdb_api_key=tmdb_api_key, tvdb_api_key=tvdb_api_key,
+                    )
+                    await db.commit()
+                except Exception as exc:
+                    await db.rollback()
+                    print(f"Default episode order: show tmdb={series_tmdb_id} skipped ({exc})")
+    except Exception as exc:
+        print(f"Default episode order for user {user_id} failed: {exc}")
+
+
 async def _run_episode_order_mapping(
     user_id: int,
     job_id: int,
@@ -497,43 +812,14 @@ async def _run_episode_order_mapping(
             await db.execute(update(SyncJob).where(SyncJob.id == job_id).values(status=SyncStatus.running))
             await db.commit()
 
-            show_result = await db.execute(
-                select(ShowModel).where(ShowModel.tmdb_id == series_tmdb_id)
-            )
-            local_show = show_result.scalar_one_or_none()
-
-            summary = await build_order_positions(
-                db, series_tmdb_id, order_key,
-                show=local_show,
+            summary, tvdb_id = await _apply_order_to_show(
+                db, user_id, series_tmdb_id, order_key,
+                order_label=order_label,
                 tmdb_api_key=tmdb_api_key,
                 tvdb_api_key=tvdb_api_key,
                 force=force_refresh,
                 on_progress=report_progress,
             )
-
-            # `build_order_positions` may have resolved and set the tvdb id on
-            # local_show; pick it up for the preference row.
-            tvdb_id = local_show.tvdb_id if local_show else None
-
-            preference = await get_episode_order(db, user_id, series_tmdb_id)
-            if preference:
-                preference.episode_order = order_key
-                preference.order_label = order_label
-                preference.tvdb_id = tvdb_id
-            else:
-                db.add(UserShowEpisodeOrder(
-                    user_id=user_id,
-                    series_tmdb_id=series_tmdb_id,
-                    episode_order=order_key,
-                    order_label=order_label,
-                    tvdb_id=tvdb_id,
-                ))
-
-            if local_show and order_key.startswith("tvdb:") and tvdb_id:
-                # #162: TMDB<->TVDB positions are now known - merge any episode
-                # previously tracked under the "wrong" (TVDB-native) numbering
-                # into its canonical TMDB-numbered row.
-                await reconcile_divergent_episode_media(db, local_show)
 
             await db.execute(update(SyncJob).where(SyncJob.id == job_id).values(
                 status=SyncStatus.completed,
@@ -552,6 +838,63 @@ async def _run_episode_order_mapping(
                 status=SyncStatus.failed, error_message=str(exc)[:900],
             ))
             await db.commit()
+
+
+class ApplyDefaultEpisodeOrderRequest(BaseModel):
+    # Defaults to the user's saved global default; passing it explicitly lets
+    # the settings page apply a just-picked order without saving it first.
+    order: str | None = None
+
+
+@router.post("/episode-order/apply-default")
+async def apply_default_episode_order(
+    body: ApplyDefaultEpisodeOrderRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Force every show the user collected or watched onto one episode order,
+    overriding per-show choices. The global default alone only covers shows
+    with no choice yet (see apply_default_episode_order_to_new_shows)."""
+    try:
+        order_key = validate_default_episode_order(
+            body.order or await get_default_episode_order(db, current_user.id)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    tmdb_api_key = tvdb_api_key = None
+    if not is_aired_order(order_key):
+        tmdb_api_key, tvdb_api_key = await asyncio.gather(
+            get_user_tmdb_key(db, current_user.id),
+            get_user_tvdb_key(db, current_user.id),
+        )
+        if not check_tmdb_key(tmdb_api_key):
+            raise HTTPException(status_code=400, detail="TMDB API key not configured")
+        if order_key.startswith("tvdb:") and not tvdb_api_key:
+            raise HTTPException(status_code=400, detail="TVDB API key not configured")
+
+    series_tmdb_ids = await user_series_tmdb_ids(db, current_user.id)
+    if not series_tmdb_ids:
+        return {"status": "noop", "shows": 0, "episode_order": order_key}
+
+    job = SyncJob(
+        user_id=current_user.id,
+        source=CollectionSource.tmdb,
+        job_type="episode_order_bulk",
+        status=SyncStatus.pending,
+        total_items=len(series_tmdb_ids),
+        stats={"episode_order": order_key},
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+
+    background_tasks.add_task(
+        _run_default_episode_order,
+        current_user.id, job.id, series_tmdb_ids, order_key, tmdb_api_key, tvdb_api_key,
+    )
+    return {"status": "started", "job_id": job.id, "shows": len(series_tmdb_ids), "episode_order": order_key}
 
 
 @router.get("/episode-order/jobs/{job_id}")
@@ -771,11 +1114,13 @@ async def set_show_episode_order(
         raise HTTPException(status_code=400, detail=str(exc))
 
     if is_aired_order(order_key):
-        # Aired order needs no positions - just drop the preference row.
-        preference = await get_episode_order(db, current_user.id, series_tmdb_id)
-        if preference:
-            await db.delete(preference)
-            await db.commit()
+        # Aired order needs no positions, so it is applied inline rather than
+        # as a background job - but through the same helper as every other
+        # order, so the row it leaves behind is the same one.
+        await _apply_order_to_show(
+            db, current_user.id, series_tmdb_id, order_key, order_label=body.order_label,
+        )
+        await db.commit()
         return {
             "episode_order": ORDER_AIRED,
             "series_tmdb_id": series_tmdb_id,
@@ -875,6 +1220,20 @@ async def get_show(
             .order_by(Media.season_number.asc(), Media.episode_number.asc())
         )
         episodes = episodes_result.scalars().all()
+
+        # #581: under TMDB aired order on a TMDB-canonical show, hide
+        # unreferenced TVDB-sourced rows - they have no TMDB counterpart and
+        # would only show as dead ghost episodes.
+        if (
+            show.tmdb_id is not None
+            and show.canonical_source != "tvdb"
+            and is_aired_order(selected_episode_order)
+        ):
+            ghosts = [ep for ep in episodes if is_ghost_candidate(ep)]
+            if ghosts:
+                hidden = await unreferenced_media_ids(db, [ep.id for ep in ghosts])
+                if hidden:
+                    episodes = [ep for ep in episodes if ep.id not in hidden]
 
         seasons_meta = {
             s["season_number"]: s for s in (show.tmdb_data or {}).get("seasons", [])
@@ -1059,7 +1418,14 @@ async def get_show(
                     Rating.media_id == show_media.id,
                     Rating.user_id == effective_user_id,
                     Rating.season_number.isnot(None),
-                    Rating.episode_order.is_(None),
+                    # Season ratings are stored under the ordering they were made
+                    # in (NULL = aired), so read the ones for the order on screen
+                    # - otherwise a rating made under DVD/TVDB order vanishes (#563).
+                    (
+                        Rating.episode_order.in_(season_rating_order_values(selected_episode_order))
+                        if season_rating_order_values(selected_episode_order)
+                        else Rating.episode_order.is_(None)
+                    ),
                 )
                 .group_by(Rating.season_number)
             )
@@ -1102,7 +1468,7 @@ async def get_show(
                     "watched": watched >= total if total > 0 else False,
                     "watch_pct": min(100, int((watched / total) * 100)) if total > 0 else 0,
                     "watch_started": watched > 0,
-                    "user_rating": None,
+                    "user_rating": season_ratings.get(ds),
                     "in_lists": [],
                 }
         else:
@@ -1162,6 +1528,8 @@ async def get_show(
                 "total": total_aired_episodes(show),
             }
 
+        show_watch_stats = await get_watch_stats(db, effective_user_id, show_id=show.id)
+
         show_dict = format_show(show)
         if metadata_lang and tmdb_extra:
             for field, tmdb_key in [("title", "name"), ("overview", "overview"), ("tagline", "tagline")]:
@@ -1203,6 +1571,9 @@ async def get_show(
             "request_enabled": state_item.get("request_enabled", False),
             "request_status": state_item.get("request_status"),
             "user_rating": state_item.get("user_rating"),
+            "play_count": show_watch_stats.plays,
+            "watch_time_minutes": show_watch_stats.watch_time_minutes,
+            "last_watched_at": show_watch_stats.last_watched_at,
             "season_states": season_states,
             "seasons": {f"season_{k}": v for k, v in sorted(seasons.items())},
             "created_by": [
@@ -1432,12 +1803,17 @@ async def get_show_season(
     api_key = await get_user_tmdb_key(db, effective_user_id)
     metadata_lang = await get_user_metadata_language(db, effective_user_id)
 
-    if show and not is_aired_order(order_key) and check_tmdb_key(api_key):
+    tmdb_show_data = None
+    if not is_aired_order(order_key) and check_tmdb_key(api_key):
+        if not show:
+            tmdb_show_data = await tmdb.get_show(
+                series_tmdb_id, api_key=api_key, language=metadata_lang,
+            )
         season_art = await _tvdb_season_art(
             db, effective_user_id, order_key,
             (order_pref_row.tvdb_id if order_pref_row else None)
-            or show.tvdb_id
-            or ((show.tmdb_data or {}).get("external_ids") or {}).get("tvdb_id"),
+            or (show.tvdb_id if show else None)
+            or ((((show.tmdb_data if show else tmdb_show_data) or {}).get("external_ids") or {}).get("tvdb_id")),
         )
         ordered_season = await _resolve_ordered_season(
             db, series_tmdb_id, order_key, season_number, api_key, metadata_lang, season_art,
@@ -1470,10 +1846,13 @@ async def get_show_season(
 
             # Fetch season and show info (if not local) in parallel
             if not show:
-                tmdb_data, tmdb_show_data = await asyncio.gather(
-                    tmdb.get_season(series_tmdb_id, season_number, api_key=api_key, language=metadata_lang),
-                    tmdb.get_show(series_tmdb_id, api_key=api_key, language=metadata_lang),
-                )
+                if ordered_season:
+                    tmdb_data = ordered_season[0]
+                else:
+                    tmdb_data, tmdb_show_data = await asyncio.gather(
+                        tmdb.get_season(series_tmdb_id, season_number, api_key=api_key, language=metadata_lang),
+                        tmdb.get_show(series_tmdb_id, api_key=api_key, language=metadata_lang),
+                    )
                 show_info = {
                     "id": None,
                     "tmdb_id": series_tmdb_id,
@@ -1486,11 +1865,17 @@ async def get_show_season(
             elif ordered_season:
                 tmdb_data = ordered_season[0]
                 show_info = format_show(show)
+                by_canonical, _ = await get_position_maps(db, series_tmdb_id, order_key)
+                _remap_show_seasons(show_info, by_canonical, season_art)
             else:
                 tmdb_data = await tmdb.get_season(
                     series_tmdb_id, season_number, api_key=api_key, language=metadata_lang
                 )
                 show_info = format_show(show)
+
+            if not show and ordered_season:
+                by_canonical, _ = await get_position_maps(db, series_tmdb_id, order_key)
+                _remap_show_seasons(show_info, by_canonical, season_art)
 
             # Bulk fetch watched state and ratings for episodes in this season
             tmdb_episodes = tmdb_data.get("episodes", [])
@@ -1505,11 +1890,13 @@ async def get_show_season(
             ]
 
             watched_ep_ids: set = set()
+            last_watched_at: dict[int, str] = {}
             episode_ratings: dict = {}
 
             # Find all local Media rows for these episodes (even if show_id is null)
             # and map them by TMDB ID for easy lookup.
             local_media_by_tmdb: dict[int, Media] = {}
+            local_episode_media_ids: list[int] = []
             if season_ep_tmdb_ids:
                 media_q = await db.execute(
                     select(Media).where(
@@ -1518,9 +1905,13 @@ async def get_show_season(
                     )
                 )
                 for m in media_q.scalars().all():
+                    local_episode_media_ids.append(m.id)
                     local_media_by_tmdb[m.tmdb_id] = m
 
             local_media_ids = [m.id for m in local_media_by_tmdb.values()]
+            season_watch_stats = await get_watch_stats(
+                db, effective_user_id, media_ids=local_episode_media_ids
+            )
 
             if local_media_ids:
                 active_rewatch = await get_active_rewatch(db, effective_user_id, show.id) if show else None
@@ -1539,6 +1930,7 @@ async def get_show_season(
                         ).distinct()
                     )
                 watched_ep_ids = {r[0] for r in watched_q.all()}
+                last_watched_at = await _last_watched_by_media(db, effective_user_id, local_media_ids)
 
                 ep_ratings_q = await db.execute(
                     select(Rating.media_id, Rating.rating).where(
@@ -1650,6 +2042,7 @@ async def get_show_season(
                         "in_library": is_in_library,
                         "runtime": ep.get("runtime"),
                         "watched": local_media_id in watched_ep_ids if local_media_id else False,
+                        "last_watched_at": last_watched_at.get(local_media_id) if local_media_id in watched_ep_ids else None,
                         "user_rating": episode_ratings.get(local_media_id) if local_media_id else None,
                         "in_lists": episode_in_lists.get(ep.get("id"), []),
                     }
@@ -1823,6 +2216,9 @@ async def get_show_season(
                 "season_in_library": season_in_library,
                 "season_collection_pct": season_collection_pct,
                 "season_user_rating": season_user_rating,
+                "play_count": season_watch_stats.plays,
+                "watch_time_minutes": season_watch_stats.watch_time_minutes,
+                "last_watched_at": season_watch_stats.last_watched_at,
                 "season_in_lists": season_in_lists,
                 "show_in_lists": show_state.get("in_lists", []),
                 "show_in_library": show_state.get("collection_pct", 0) > 0,
@@ -1832,11 +2228,17 @@ async def get_show_season(
             }
         elif show:
             # Fallback to local only if no TMDB key
+            local_season_watch_stats = await get_watch_stats(
+                db, effective_user_id, media_ids=[episode.id for episode in local_episodes]
+            )
             return {
                 "season_number": season_number,
                 "name": f"Season {season_number}",
                 "episodes": [format_media(ep) for ep in local_episodes],
                 "show": format_show(show),
+                "play_count": local_season_watch_stats.plays,
+                "watch_time_minutes": local_season_watch_stats.watch_time_minutes,
+                "last_watched_at": local_season_watch_stats.last_watched_at,
             }
         else:
             raise HTTPException(status_code=404, detail="Show not found")
@@ -2038,6 +2440,9 @@ async def get_episode_detail(
         ep_tmdb_id = ep_data.get("id")
         ep_state: dict = {"tmdb_id": ep_tmdb_id, "type": "episode"}
         await enrich_with_state(db, effective_user_id, [ep_state])
+        watch_time_minutes = (await get_watch_stats(
+            db, effective_user_id, tmdb_id=ep_tmdb_id, media_type="episode"
+        )).watch_time_minutes
 
         return {
             "id": local_ep.id if local_ep else None,
@@ -2048,6 +2453,8 @@ async def get_episode_detail(
             "collection_pct": ep_state.get("collection_pct", 100 if local_ep else 0),
             "user_rating": ep_state.get("user_rating"),
             "play_count": ep_state.get("play_count", 0),
+            "watch_time_minutes": watch_time_minutes,
+            "last_watched_at": ep_state.get("last_watched_at"),
             "episode_order": order_key,
             "episode_number": display_episode,
             "season_number": display_season,
@@ -2186,6 +2593,9 @@ async def refresh_show_metadata(
 
     semaphore = asyncio.Semaphore(10)
     season_data: dict[int, dict[int, dict]] = {}
+    # Seasons whose TMDB fetch succeeded; a season missing from here failed
+    # transiently, so its absent episodes are NOT proof of a ghost (#581).
+    fetched_tmdb_seasons: set[int] = set()
 
     # Collect seasons needed: linked episodes + all show seasons (for orphan matching)
     linked_seasons = {ep.season_number for ep in episodes if ep.season_number is not None}
@@ -2200,6 +2610,7 @@ async def refresh_show_metadata(
                 # See the matching comment on the tmdb.get_show call above.
                 d = await tmdb.get_season(series_tmdb_id, sn, api_key=api_key, cache_ttl=None)
                 season_data[sn] = {ep["episode_number"]: ep for ep in d.get("episodes", [])}
+                fetched_tmdb_seasons.add(sn)
             except Exception:
                 season_data[sn] = {}
 
@@ -2272,8 +2683,61 @@ async def refresh_show_metadata(
                 )
         return media
 
+    # #581: on a TMDB-canonical show, drop unreferenced TVDB-sourced / bare
+    # episode rows TMDB confirms don't exist (ghosts from a TVDB fallback).
+    ghost_ids: set[int] = set()
+    if show.tmdb_id is not None and show.canonical_source != "tvdb":
+        candidates = []
+        for media in episodes:
+            if media.season_number is None or media.episode_number is None:
+                continue
+            if not is_ghost_candidate(media):
+                continue
+            absent = (
+                (media.season_number in fetched_tmdb_seasons
+                 and media.episode_number not in season_data.get(media.season_number, {}))
+                or media.season_number not in tmdb_seasons
+            )
+            if absent:
+                candidates.append(media)
+        if candidates:
+            # #174: a tvdb:* order (any user) or an episode-order mapping makes
+            # raw TVDB numbering meaningful - never prune those rows here.
+            tvdb_order_in_use = await db.scalar(
+                select(UserShowEpisodeOrder.id).where(
+                    UserShowEpisodeOrder.series_tmdb_id == show.tmdb_id,
+                    or_(
+                        UserShowEpisodeOrder.episode_order.like("tvdb:%"),
+                        UserShowEpisodeOrder.episode_order == "tvdb",
+                    ),
+                ).limit(1)
+            )
+            if tvdb_order_in_use is not None:
+                candidates = []
+        if candidates:
+            mappings = (await db.execute(
+                select(
+                    EpisodeOrderMapping.tvdb_id,
+                    EpisodeOrderMapping.tvdb_season_number,
+                    EpisodeOrderMapping.tvdb_episode_number,
+                ).where(EpisodeOrderMapping.series_tmdb_id == show.tmdb_id)
+            )).all()
+            mapped_ids = {r[0] for r in mappings}
+            mapped_positions = {(r[1], r[2]) for r in mappings}
+            candidates = [
+                m for m in candidates
+                if (m.tvdb_id is None or m.tvdb_id not in mapped_ids)
+                and (m.season_number, m.episode_number) not in mapped_positions
+            ]
+        if candidates:
+            ghost_ids = await unreferenced_media_ids(db, [m.id for m in candidates])
+            if ghost_ids:
+                await db.execute(delete(Media).where(Media.id.in_(ghost_ids)))
+
     episode_ids: list[int] = []
     for media in episodes:
+        if media.id in ghost_ids:
+            continue
         media = await apply_best_available(media)
         episode_ids.append(media.id)
 
@@ -2321,31 +2785,8 @@ async def get_tvdb_show(
 
     series_tmdb_id = show_data.get("tmdb_id_cross")
     series_tmdb_id = int(series_tmdb_id) if series_tmdb_id else None
-    show = await _find_local_show_for_tvdb(db, tvdb_id, series_tmdb_id)
-    if show is None:
-        if series_tmdb_id:
-            tmdb_api_key_for_show = await get_user_tmdb_key(db, effective_user_id)
-            from routers.webhooks import _find_or_create_show
-            show = await _find_or_create_show(db, series_tmdb_id, tmdb_api_key_for_show)
-        else:
-            # Show has no TMDB presence at all — mirrors the "resolve an
-            # unmatched show to TVDB" flow in routers/sync.py.
-            show = ShowModel(
-                tvdb_id=tvdb_id,
-                tmdb_id=None,
-                canonical_source="tvdb",
-                title=show_data.get("title") or f"TVDB #{tvdb_id}",
-                original_title=show_data.get("original_title"),
-                overview=show_data.get("overview"),
-                poster_path=show_data.get("poster_path"),
-                backdrop_path=show_data.get("backdrop_path"),
-                status=show_data.get("status"),
-                first_air_date=show_data.get("first_air_date"),
-                last_air_date=show_data.get("last_air_date"),
-                tmdb_data={"seasons": show_data.get("seasons", []), "genres": show_data.get("genres", []), "source": "tvdb"},
-            )
-            db.add(show)
-            await db.flush()
+    tmdb_key_for_show = await get_user_tmdb_key(db, effective_user_id) if series_tmdb_id else None
+    show, series_tmdb_id = await _resolve_tvdb_show(db, tvdb_id, show_data, series_tmdb_id, tmdb_key_for_show)
 
     # Link this Show to its TVDB id (see #101 — mark-as-watched/collect
     # endpoints only ever look shows up by tmdb_id, so without this they can
@@ -2630,6 +3071,12 @@ async def get_tvdb_show(
         )
         show_user_rating = show_rating_result.scalar_one_or_none()
 
+    show_watch_stats = (
+        await get_watch_stats(db, effective_user_id, show_id=show.id)
+        if show
+        else WatchStats(0, 0, None)
+    )
+
     return {
         **show_data,
         "id": show.id if show else None,
@@ -2638,7 +3085,7 @@ async def get_tvdb_show(
         "tagline": None,
         "tmdb_rating": tmdb_show.get("vote_average"),
         "imdb_id": show_data.get("imdb_id"),
-        "tmdb_id_cross": show_data.get("tmdb_id_cross"),
+        "tmdb_id_cross": series_tmdb_id,
         "episode_order": "tvdb",
         "adult": False,
         "in_library": in_library,
@@ -2653,6 +3100,9 @@ async def get_tvdb_show(
         "request_enabled": request_enabled,
         "request_status": None,
         "user_rating": show_user_rating,
+        "play_count": show_watch_stats.plays,
+        "watch_time_minutes": show_watch_stats.watch_time_minutes,
+        "last_watched_at": show_watch_stats.last_watched_at,
         "season_states": season_states,
         "seasons": {},
         "seasons_meta": show_data["seasons"],
@@ -2698,31 +3148,8 @@ async def get_tvdb_season(
 
     series_tmdb_id = show_data.get("tmdb_id_cross")
     series_tmdb_id = int(series_tmdb_id) if series_tmdb_id else None
-    show = await _find_local_show_for_tvdb(db, tvdb_id, series_tmdb_id)
-    if show is None:
-        if series_tmdb_id:
-            tmdb_api_key_for_show = await get_user_tmdb_key(db, effective_user_id)
-            from routers.webhooks import _find_or_create_show
-            show = await _find_or_create_show(db, series_tmdb_id, tmdb_api_key_for_show)
-        else:
-            # Show has no TMDB presence at all — mirrors the "resolve an
-            # unmatched show to TVDB" flow in routers/sync.py.
-            show = ShowModel(
-                tvdb_id=tvdb_id,
-                tmdb_id=None,
-                canonical_source="tvdb",
-                title=show_data.get("title") or f"TVDB #{tvdb_id}",
-                original_title=show_data.get("original_title"),
-                overview=show_data.get("overview"),
-                poster_path=show_data.get("poster_path"),
-                backdrop_path=show_data.get("backdrop_path"),
-                status=show_data.get("status"),
-                first_air_date=show_data.get("first_air_date"),
-                last_air_date=show_data.get("last_air_date"),
-                tmdb_data={"seasons": show_data.get("seasons", []), "genres": show_data.get("genres", []), "source": "tvdb"},
-            )
-            db.add(show)
-            await db.flush()
+    tmdb_key_for_show = await get_user_tmdb_key(db, effective_user_id) if series_tmdb_id else None
+    show, series_tmdb_id = await _resolve_tvdb_show(db, tvdb_id, show_data, series_tmdb_id, tmdb_key_for_show)
 
     # Link this Show to its TVDB id (see #101 — mark-as-watched/collect
     # endpoints only ever look shows up by tmdb_id, so without this they can
@@ -2864,7 +3291,9 @@ async def get_tvdb_season(
         for _, _, local_episode, _ in mapped_rows
         if local_episode
     })
+    season_watch_stats = await get_watch_stats(db, effective_user_id, media_ids=local_media_ids)
     watched_ep_ids: set[int] = set()
+    last_watched_at: dict[int, str] = {}
     collected_ep_ids: set[int] = set()
     episode_ratings: dict[int, float] = {}
     if local_media_ids:
@@ -2888,6 +3317,7 @@ async def get_tvdb_season(
                 .distinct()
             )
         watched_ep_ids = {row[0] for row in watched_q.all()}
+        last_watched_at = await _last_watched_by_media(db, effective_user_id, local_media_ids)
         collected_q = await db.execute(
             select(Collection.media_id)
             .where(
@@ -2973,6 +3403,7 @@ async def get_tvdb_season(
             "unmatched": unmatched_ep,
             "in_library": local_episode.id in collected_ep_ids if local_episode else False,
             "watched": local_episode.id in watched_ep_ids if local_episode else False,
+            "last_watched_at": last_watched_at.get(local_episode.id) if local_episode and local_episode.id in watched_ep_ids else None,
             "user_rating": episode_ratings.get(local_episode.id) if local_episode else None,
             "in_lists": tvdb_episode_in_lists.get(local_episode.id, []) if local_episode else [],
         })
@@ -3004,6 +3435,9 @@ async def get_tvdb_season(
         "season_watch_started": season_watch_started,
         "season_collection_pct": season_collection_pct,
         "season_user_rating": season_user_rating,
+        "play_count": season_watch_stats.plays,
+        "watch_time_minutes": season_watch_stats.watch_time_minutes,
+        "last_watched_at": season_watch_stats.last_watched_at,
         "season_in_lists": season_in_lists,
         "show_in_library": show is not None,
         "show": {
@@ -3066,31 +3500,8 @@ async def get_tvdb_episode(
 
     series_tmdb_id = show_data.get("tmdb_id_cross")
     series_tmdb_id = int(series_tmdb_id) if series_tmdb_id else None
-    show = await _find_local_show_for_tvdb(db, tvdb_id, series_tmdb_id)
-    if show is None:
-        if series_tmdb_id:
-            tmdb_api_key = await get_user_tmdb_key(db, effective_user_id)
-            from routers.webhooks import _find_or_create_show
-            show = await _find_or_create_show(db, series_tmdb_id, tmdb_api_key)
-        else:
-            # Show has no TMDB presence at all — mirrors the "resolve an
-            # unmatched show to TVDB" flow in routers/sync.py.
-            show = ShowModel(
-                tvdb_id=tvdb_id,
-                tmdb_id=None,
-                canonical_source="tvdb",
-                title=show_data.get("title") or f"TVDB #{tvdb_id}",
-                original_title=show_data.get("original_title"),
-                overview=show_data.get("overview"),
-                poster_path=show_data.get("poster_path"),
-                backdrop_path=show_data.get("backdrop_path"),
-                status=show_data.get("status"),
-                first_air_date=show_data.get("first_air_date"),
-                last_air_date=show_data.get("last_air_date"),
-                tmdb_data={"seasons": show_data.get("seasons", []), "genres": show_data.get("genres", []), "source": "tvdb"},
-            )
-            db.add(show)
-            await db.flush()
+    tmdb_key_for_show = await get_user_tmdb_key(db, effective_user_id) if series_tmdb_id else None
+    show, series_tmdb_id = await _resolve_tvdb_show(db, tvdb_id, show_data, series_tmdb_id, tmdb_key_for_show)
 
     # Link this Show to its TVDB id (found-via-tmdb_id and _find_or_create_show
     # both leave it unset) so mark-as-watched/collect endpoints — which only
@@ -3195,6 +3606,7 @@ async def get_tvdb_episode(
     local_ep = None
     library_info = None
     play_count = 0
+    watch_time_minutes = 0
 
     if show and not unmatched:
         local_ep_q = await db.execute(
@@ -3232,6 +3644,9 @@ async def get_tvdb_episode(
                 )
             play_count = watched_q.scalar_one()
             watched = play_count > 0
+            watch_time_minutes = (await get_watch_stats(
+                db, effective_user_id, media_ids=[local_ep.id]
+            )).watch_time_minutes
             rating_q = await db.execute(
                 select(Rating.rating).where(
                     Rating.media_id == local_ep.id,
@@ -3309,6 +3724,7 @@ async def get_tvdb_episode(
         "watched": watched,
         "user_rating": user_rating,
         "play_count": play_count,
+        "watch_time_minutes": watch_time_minutes,
         "in_lists": in_lists,
         "library": library_info,
         "cast": cast,

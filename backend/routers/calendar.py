@@ -35,12 +35,19 @@ from models.events import WatchEvent
 from models.media import Media
 from models.show import Show
 from models.users import User, UserSettings
+from core.timeutil import utcnow
 
 router = APIRouter()
 
 CALENDAR_TTL = timedelta(hours=24)
-CALENDAR_SCHEMA = 7
-CALENDAR_WINDOW_DAYS = 14
+# How long a calendar computed with failed provider calls is trusted.
+INCOMPLETE_RETRY = timedelta(minutes=5)
+INCOMPLETE_MIN_RATIO = 0.05
+CALENDAR_SCHEMA = 8
+# The cached payload always covers the longest horizon a user can pick (#467);
+# GET /calendar trims it down to the requested number of days.
+CALENDAR_WINDOW_DAYS = 90
+CALENDAR_DEFAULT_DAYS = 14
 CALENDAR_LOOKBACK_DAYS = 7
 FETCH_CONCURRENCY = 8
 
@@ -151,6 +158,34 @@ async def _resolve_watch_status(db: AsyncSession, user_id: int, entries: list[di
         e["watched"] = media_id in watched_ids if media_id else False
 
 
+def _seasons_to_scan(detail: dict, window_start: date) -> set[int]:
+    """Season numbers worth fetching for one show's calendar entries.
+
+    next_episode_to_air names the season still to come. Right after an episode
+    airs TMDB often has no dated next episode at all (the rest of the season is
+    undated), so that pointer is null and the episode that aired today or
+    yesterday would vanish from the calendar even though it is well inside the
+    lookback window - so the season of last_episode_to_air is scanned too
+    whenever that episode aired inside the window (#518)."""
+    season_numbers: set[int] = set()
+    next_ep = detail.get("next_episode_to_air")
+    if next_ep and next_ep.get("season_number") is not None:
+        season_numbers.add(next_ep["season_number"])
+    last_ep = detail.get("last_episode_to_air")
+    if (
+        last_ep
+        and last_ep.get("season_number") is not None
+        and (last_ep.get("air_date") or "") >= window_start.isoformat()
+    ):
+        season_numbers.add(last_ep["season_number"])
+    # Specials (season 0) never surface as next_episode_to_air, so pull
+    # that season explicitly whenever the show has one and scan it for
+    # anything landing in the window too (#333).
+    if any((s or {}).get("season_number") == 0 for s in detail.get("seasons") or []):
+        season_numbers.add(0)
+    return season_numbers
+
+
 async def compute_calendar(db: AsyncSession, user_id: int) -> dict:
     from core import tmdb as tmdb_client
     from core import tvdb as tvdb_client
@@ -176,7 +211,7 @@ async def compute_calendar(db: AsyncSession, user_id: int) -> dict:
     ]
     if not candidates:
         return {
-            "schema": CALENDAR_SCHEMA, "generated_at": datetime.utcnow().isoformat(),
+            "schema": CALENDAR_SCHEMA, "generated_at": utcnow().isoformat(),
             "today": today.isoformat(), "shows_checked": 0, "entries": [],
         }
 
@@ -184,14 +219,20 @@ async def compute_calendar(db: AsyncSession, user_id: int) -> dict:
     window_start = today - timedelta(days=CALENDAR_LOOKBACK_DAYS)
     window_end = today + timedelta(days=CALENDAR_WINDOW_DAYS - 1)
     sem = asyncio.Semaphore(FETCH_CONCURRENCY)
+    # Provider calls that failed (TMDB/TheTVDB down or rate limited). A failed
+    # show is skipped, so the payload is incomplete and must not be trusted for
+    # the rest of the day - see _is_cache_fresh.
+    failures = 0
 
     async def _fetch_tvdb(show: Show) -> list[dict]:
+        nonlocal failures
         async with sem:
             try:
                 raw_eps = await tvdb_client.get_series_episodes(
                     show.tvdb_id, None, tvdb_api_key, language=tvdb_client.tvdb_language(language)
                 )
             except Exception:
+                failures += 1
                 return []
         out = []
         for raw in raw_eps:
@@ -213,22 +254,16 @@ async def compute_calendar(db: AsyncSession, user_id: int) -> dict:
         return out
 
     async def _fetch(show: Show) -> list[dict]:
+        nonlocal failures
         if _is_tvdb_show(show):
             return await _fetch_tvdb(show)
         async with sem:
             try:
                 detail = await tmdb_client.get_show_light(show.tmdb_id, api_key=api_key, language=language)
             except Exception:
+                failures += 1
                 return []
-            season_numbers: set[int] = set()
-            next_ep = detail.get("next_episode_to_air")
-            if next_ep and next_ep.get("season_number") is not None:
-                season_numbers.add(next_ep["season_number"])
-            # Specials (season 0) never surface as next_episode_to_air, so pull
-            # that season explicitly whenever the show has one and scan it for
-            # anything landing in the window too (#333).
-            if any((s or {}).get("season_number") == 0 for s in detail.get("seasons") or []):
-                season_numbers.add(0)
+            season_numbers = _seasons_to_scan(detail, window_start)
             if not season_numbers:
                 return []
             seasons: list[dict] = []
@@ -236,6 +271,7 @@ async def compute_calendar(db: AsyncSession, user_id: int) -> dict:
                 try:
                     seasons.append(await tmdb_client.get_season(show.tmdb_id, sn, api_key=api_key, language=language))
                 except Exception:
+                    failures += 1
                     continue
 
         out = []
@@ -305,18 +341,32 @@ async def compute_calendar(db: AsyncSession, user_id: int) -> dict:
     ))
     return {
         "schema": CALENDAR_SCHEMA,
-        "generated_at": datetime.utcnow().isoformat(),
+        "generated_at": utcnow().isoformat(),
         "today": today.isoformat(),
         "shows_checked": len(candidates),
+        "failed_fetches": failures,
         "entries": entries,
     }
 
 
+def _is_incomplete(payload: dict) -> bool:
+    """Did enough provider calls fail that shows are likely missing? A single
+    show that always errors (bad id) must not force a full recompute every
+    few minutes, so small failure counts are tolerated."""
+    failed = payload.get("failed_fetches") or 0
+    return failed > 0 and failed >= INCOMPLETE_MIN_RATIO * max(payload.get("shows_checked") or 0, 1)
+
+
 def _is_cache_fresh(row: UserCalendarCache | None) -> bool:
-    if not row or (datetime.utcnow() - row.computed_at) >= CALENDAR_TTL:
+    if not row or (utcnow() - row.computed_at) >= CALENDAR_TTL:
         return False
     payload = row.payload or {}
     if payload.get("schema") != CALENDAR_SCHEMA:
+        return False
+    # Computed while TMDB/TheTVDB was failing for some shows: those shows are
+    # missing, so retry soon instead of serving a near-empty calendar (and an
+    # empty airing-today widget) until midnight.
+    if _is_incomplete(payload) and (utcnow() - row.computed_at) >= INCOMPLETE_RETRY:
         return False
     # A cache built before local midnight is stale the instant the calendar
     # day rolls over, even if it's still within the raw TTL - 24h is a
@@ -339,7 +389,7 @@ def _is_cache_usable(
     after local midnight on a full TMDB fan-out (#194). Deliberately ignores
     the day-match and the 24h TTL - staleness within max_age is the point.
     """
-    if not row or (datetime.utcnow() - row.computed_at) >= max_age:
+    if not row or (utcnow() - row.computed_at) >= max_age:
         return False
     return (row.payload or {}).get("schema") == CALENDAR_SCHEMA
 
@@ -354,9 +404,9 @@ async def _load_or_compute(db: AsyncSession, user_id: int, force: bool) -> dict:
     payload = await compute_calendar(db, user_id)
     if row:
         row.payload = payload
-        row.computed_at = datetime.utcnow()
+        row.computed_at = utcnow()
     else:
-        row = UserCalendarCache(user_id=user_id, payload=payload, computed_at=datetime.utcnow())
+        row = UserCalendarCache(user_id=user_id, payload=payload, computed_at=utcnow())
         db.add(row)
     await db.commit()
     await _resolve_watch_status(db, user_id, payload.get("entries", []))
@@ -380,9 +430,59 @@ async def _background_compute(user_id: int) -> None:
         _computing.discard(user_id)
 
 
+def _trim_window(result: dict, days: int) -> dict:
+    """The cached payload spans CALENDAR_WINDOW_DAYS ahead; hand back only the
+    first `days` of it (today counts as day one)."""
+    calendar = result.get("calendar") or {}
+    entries = calendar.get("entries")
+    if not entries or days >= CALENDAR_WINDOW_DAYS:
+        return result
+    today = calendar.get("today") or _server_today().isoformat()
+    last = (date.fromisoformat(today) + timedelta(days=days - 1)).isoformat()
+    return {**result, "calendar": {**calendar, "entries": [e for e in entries if e["air_date"] <= last]}}
+
+
+async def _sonarr_config(db: AsyncSession, user_id: int):
+    from routers.media import _effective_sonarr, _get_global_settings
+
+    user_settings = (await db.execute(select(UserSettings).where(UserSettings.user_id == user_id))).scalar_one_or_none()
+    return _effective_sonarr(user_settings, await _get_global_settings(db))
+
+
+async def _apply_sonarr(
+    db: AsyncSession, user_id: int, result: dict, sonarr_only: bool, sonarr_monitored: bool
+) -> dict:
+    """Adds sonarr_configured and applies the optional Sonarr filters (#501):
+    sonarr_only keeps shows present in Sonarr, sonarr_monitored keeps shows
+    Sonarr has flagged monitored. Applied per request on top of the cached
+    payload, like the watch flags. Entries are left unfiltered when Sonarr
+    can't be reached, so a flaky Sonarr doesn't read as an empty calendar."""
+    from core import sonarr as sonarr_client
+
+    cfg = await _sonarr_config(db, user_id)
+    result = {**result, "sonarr_configured": cfg is not None}
+    calendar = result.get("calendar") or {}
+    entries = calendar.get("entries")
+    if not cfg or not entries or not (sonarr_only or sonarr_monitored):
+        return result
+    fetch = sonarr_client.get_monitored_series_ids if sonarr_monitored else sonarr_client.get_all_series_ids
+    ids = await fetch(cfg.sonarr_url, cfg.sonarr_token)
+    if not ids:
+        return result
+    sonarr_tmdb, sonarr_tvdb = ids
+    kept = [
+        e for e in entries
+        if (e.get("show_tmdb_id") in sonarr_tmdb) or (e.get("show_tvdb_id") in sonarr_tvdb)
+    ]
+    return {**result, "calendar": {**calendar, "entries": kept}}
+
+
 @router.get("")
 async def get_calendar(
     cached_only: bool = Query(False),
+    sonarr_only: bool = Query(False),
+    sonarr_monitored: bool = Query(False),
+    days: int = Query(CALENDAR_DEFAULT_DAYS, ge=1, le=CALENDAR_WINDOW_DAYS),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_or_api_key),
 ):
@@ -402,15 +502,22 @@ async def get_calendar(
             await _resolve_watch_status(db, current_user.id, row.payload.get("entries", []))
             if not fresh:
                 asyncio.create_task(_background_compute(current_user.id))
-            return {"computed_at": row.computed_at.isoformat(), "cached": True, "calendar": row.payload}
+            result = _trim_window(
+                {"computed_at": row.computed_at.isoformat(), "cached": True, "calendar": row.payload}, days
+            )
+            return await _apply_sonarr(db, current_user.id, result, sonarr_only, sonarr_monitored)
         asyncio.create_task(_background_compute(current_user.id))
-        return {"computed_at": None, "cached": False, "calendar": {"entries": []}}
-    return await _load_or_compute(db, current_user.id, force=False)
+        return await _apply_sonarr(
+            db, current_user.id, {"computed_at": None, "cached": False, "calendar": {"entries": []}}, False, False
+        )
+    result = _trim_window(await _load_or_compute(db, current_user.id, force=False), days)
+    return await _apply_sonarr(db, current_user.id, result, sonarr_only, sonarr_monitored)
 
 
 @router.post("/refresh")
 async def refresh_calendar(
+    days: int = Query(CALENDAR_DEFAULT_DAYS, ge=1, le=CALENDAR_WINDOW_DAYS),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_or_api_key),
 ):
-    return await _load_or_compute(db, current_user.id, force=True)
+    return _trim_window(await _load_or_compute(db, current_user.id, force=True), days)

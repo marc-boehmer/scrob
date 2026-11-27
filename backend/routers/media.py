@@ -1,13 +1,14 @@
 import asyncio
 import httpx
 import logging
+import math
 import re
 import urllib.parse
 import uuid
-from typing import Optional
+from typing import Annotated, Optional
 
 logger = logging.getLogger(__name__)
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, Query, HTTPException, Request
 from fastapi.responses import StreamingResponse, Response
 from starlette.background import BackgroundTask
@@ -43,6 +44,7 @@ from core.episode_order import (
 from models.profile import UserProfileData
 from core import tmdb
 from core.identity import find_media
+from core.watch_stats import get_watch_stats
 from core.limiter import limiter
 from core.networks import search_curated_networks
 from core.rewatch import get_active_rewatches_for_shows
@@ -60,6 +62,23 @@ from models.global_settings import GlobalSettings
 from models.calendar_cache import UserCalendarCache
 
 router = APIRouter()
+
+# One "my rating" filter value. The bounds must sit on the item type: Query(ge=, le=)
+# on a list[int] parameter is applied to the list itself, not to each value.
+MyRatingValue = Annotated[int, Field(ge=1, le=10)]
+
+
+# Which my_rating value a stored rating counts as. Ratings are floats and media
+# servers can send halves, so round half up (7.5 -> 8) instead of matching exactly.
+# The SQL and Python forms must stay the same rule.
+def my_rating_value_sql(rating):
+    return func.floor(rating + 0.5)
+
+
+def my_rating_value(rating: float) -> int:
+    return math.floor(rating + 0.5)
+
+
 _PLAYABLE_COLLECTION_SOURCES = {
     CollectionSource.jellyfin,
     CollectionSource.emby,
@@ -740,6 +759,26 @@ async def enrich_with_state(
             )
             play_count_map[tid0] = pc_q.scalar() or 0
 
+    # --- Most recent play date (#317) ---
+    # Movies and episodes only; plays with an unknown date don't count.
+    last_watched_map: dict = {}
+    play_tmdb_ids = movie_tmdb_ids + ep_tmdb_ids
+    if play_tmdb_ids:
+        lw_q = await db.execute(
+            select(Media.tmdb_id, Media.media_type, func.max(WatchEvent.watched_at))
+            .join(WatchEvent, WatchEvent.media_id == Media.id)
+            .where(
+                WatchEvent.user_id == user_id,
+                WatchEvent.completed == True,
+                WatchEvent.watched_at.isnot(None),
+                Media.tmdb_id.in_(play_tmdb_ids),
+                Media.media_type.in_([MediaType.movie, MediaType.episode]),
+            )
+            .group_by(Media.tmdb_id, Media.media_type)
+        )
+        for lw_tmdb_id, lw_type, lw_at in lw_q.all():
+            last_watched_map[(lw_tmdb_id, lw_type.value)] = lw_at
+
     # --- Apply to items ---
     for item in items:
         tid = item.get("tmdb_id")
@@ -796,6 +835,9 @@ async def enrich_with_state(
         item["request_status"] = request_status_map.get(tid)
         item["user_rating"] = user_ratings.get((tid, t))
         item["play_count"] = play_count_map.get(tid, 0)
+        if t in ("movie", "episode"):
+            lw = last_watched_map.get((tid, t)) if item["watched"] else None
+            item["last_watched_at"] = lw.isoformat() if lw else None
         _attach_episode_order_fields(item, order_keys, order_positions)
 
     return items
@@ -943,6 +985,7 @@ async def list_media(
     genre: list[str] = Query(default=[]),
     year: list[int] = Query(default=[]),
     watched: list[str] = Query(default=[]),
+    my_rating: list[MyRatingValue] = Query(default=[]),
     # in_list = in|out: membership of any of the user's lists (#255).
     in_list: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
@@ -967,6 +1010,15 @@ async def list_media(
         ]))
     if year:
         filters.append(or_(*[Media.release_date.like(f'{y}%') for y in year]))
+    if my_rating:
+        # Personal title ratings are user-scoped. Season ratings use the same
+        # table, so exclude them explicitly from collection-level filters.
+        rated_media_ids = select(Rating.media_id).where(
+            Rating.user_id == current_user.id,
+            Rating.season_number.is_(None),
+            my_rating_value_sql(Rating.rating).in_(my_rating),
+        )
+        filters.append(Media.id.in_(rated_media_ids))
     watched_states = set(watched)
     if watched_states and watched_states != {"watched", "unwatched"}:
         watched_exists = (
@@ -1008,6 +1060,20 @@ async def list_media(
             base_query
             .outerjoin(last_watched_sq, last_watched_sq.c.media_id == Media.id)
             .order_by(last_watched_sq.c.last_watched_at.desc().nulls_last(), Media.id.desc())
+            .offset(offset).limit(page_size)
+        )
+    elif sort == "user_rating":
+        query = (
+            base_query
+            .outerjoin(
+                Rating,
+                and_(
+                    Rating.media_id == Media.id,
+                    Rating.user_id == current_user.id,
+                    Rating.season_number.is_(None),
+                ),
+            )
+            .order_by(Rating.rating.desc().nulls_last(), Media.tmdb_rating.desc().nulls_last(), Media.id.desc())
             .offset(offset).limit(page_size)
         )
     else:
@@ -2258,11 +2324,11 @@ _IN_LIST_CHECKS = {
 
 def _apply_local_filters(
     items: list[dict], collection: list[str], watch: list[str], arr: list[str], year: list[int] | None = None,
-    in_list: list[str] | None = None,
+    in_list: list[str] | None = None, my_rating: list[int] | None = None,
 ) -> list[dict]:
     """Local-only filters get_tmdb_list applies after TMDB enrichment.
 
-    collection/watch/arr can't be expressed by TMDB's discover API at all.
+    collection/watch/arr/my_rating can't be expressed by TMDB's discover API at all.
     year could (primary_release_year/first_air_date_year), but only as a
     single value - TMDB has no "year A OR year B" for discover, so a
     multi-year selection is applied locally here instead, same as the others.
@@ -2282,7 +2348,23 @@ def _apply_local_filters(
     if year:
         wanted = {str(y) for y in year}
         items = [i for i in items if (i.get("release_date") or "")[:4] in wanted]
+    if my_rating:
+        wanted_ratings = set(my_rating)
+        items = [
+            i for i in items
+            if i.get("user_rating") is not None and my_rating_value(i["user_rating"]) in wanted_ratings
+        ]
     return items
+
+
+def _expand_excluded_languages(codes: list[str]) -> set[str]:
+    """Lower-cased set of original-language codes to hide. TMDB files
+    Cantonese-language titles under "cn" rather than "zh", so excluding
+    Chinese has to cover both or those titles keep showing up."""
+    excluded = {c.strip().lower() for c in codes if c and c.strip()}
+    if "zh" in excluded:
+        excluded.add("cn")
+    return excluded
 
 
 def _paginate_matches(matched: list[dict], page: int, page_size: int) -> tuple[list[dict], int]:
@@ -2311,6 +2393,14 @@ async def get_tmdb_list(
     min_rating: float | None = Query(None),
     status: str | None = Query(None),
     original_language: str | None = Query(None),
+    # Original languages to leave out. TMDB's discover has no "without"
+    # counterpart to with_original_language, so these are dropped locally
+    # from each scanned page, like the collection/watch filters below.
+    exclude_language: list[str] = Query(default=[]),
+    # Genres to leave out. Unlike language, TMDB discover supports this
+    # natively (without_genres), so it is pushed upstream rather than
+    # filtered locally.
+    exclude_genre: list[str] = Query(default=[]),
     # Restrict discover to one TV network (with_networks, TV only) or one
     # production company (with_companies, movie or TV). Powers the
     # /network/{id} and /studio/{id} browse pages.
@@ -2324,6 +2414,7 @@ async def get_tmdb_list(
     arr: list[str] = Query(default=[]),
     # in_list = in|out: membership of any of the user's lists (#255).
     in_list: list[str] = Query(default=[]),
+    my_rating: list[MyRatingValue] = Query(default=[]),
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(get_optional_user_or_api_key),
 ):
@@ -2335,7 +2426,7 @@ async def get_tmdb_list(
             raise HTTPException(status_code=401, detail="Not authenticated")
         tmdb_key = gs.tmdb_api_key
         # No personal library/watch history to filter on without a user.
-        collection, watch, arr = [], [], []
+        collection, watch, arr, my_rating = [], [], [], []
     else:
         tmdb_key = await get_user_tmdb_key(db, current_user.id)
 
@@ -2356,7 +2447,7 @@ async def get_tmdb_list(
         # A network/company constraint always goes through discover (there's no
         # "popular titles on network X" list endpoint).
         by_studio = network is not None or company is not None
-        has_filters = bool(genre or min_rating or status or original_language) or by_studio
+        has_filters = bool(genre or exclude_genre or min_rating or status or original_language) or by_studio
 
         # Explore cards render straight from these TMDB responses, so ask TMDB
         # for the user's Metadata Language directly - detail pages and list
@@ -2374,8 +2465,10 @@ async def get_tmdb_list(
                 studio_vote_min = 0 if by_studio else None
                 if type == MediaType.movie:
                     genre_ids = [MOVIE_GENRE_IDS[g] for g in genre if g in MOVIE_GENRE_IDS]
+                    without_ids = [MOVIE_GENRE_IDS[g] for g in exclude_genre if g in MOVIE_GENRE_IDS]
                     return await tmdb.discover_movies(
                         page=fetch_page, genre_ids=genre_ids or None,
+                        without_genre_ids=without_ids or None,
                         min_rating=min_rating, sort_by=sort_by,
                         vote_count_min=studio_vote_min,
                         with_original_language=original_language,
@@ -2383,9 +2476,11 @@ async def get_tmdb_list(
                         language=metadata_lang,
                     )
                 genre_ids = [TV_GENRE_IDS[g] for g in genre if g in TV_GENRE_IDS]
+                without_ids = [TV_GENRE_IDS[g] for g in exclude_genre if g in TV_GENRE_IDS]
                 status_id = TV_STATUS_IDS.get(status) if status else None
                 return await tmdb.discover_shows(
                     page=fetch_page, genre_ids=genre_ids or None,
+                    without_genre_ids=without_ids or None,
                     min_rating=min_rating, sort_by=sort_by,
                     vote_count_min=studio_vote_min,
                     status=status_id, with_original_language=original_language,
@@ -2458,7 +2553,9 @@ async def get_tmdb_list(
                 await enrich_with_state(db, current_user.id, enriched)
             return enriched
 
-        if not (collection or watch or arr or year or in_list):
+        excluded_languages = _expand_excluded_languages(exclude_language)
+
+        if not (collection or watch or arr or year or in_list or excluded_languages or my_rating):
             data = await _fetch_tmdb_page(page)
             enriched = await _build_enriched(data.get("results", []))
             return {
@@ -2495,9 +2592,14 @@ async def get_tmdb_list(
                     if res["id"] not in seen_ids:
                         seen_ids.add(res["id"])
                         batch_results.append(res)
+            if excluded_languages:
+                batch_results = [
+                    r for r in batch_results
+                    if (r.get("original_language") or "").lower() not in excluded_languages
+                ]
             if batch_results:
                 enriched = await _build_enriched(batch_results)
-                matched.extend(_apply_local_filters(enriched, collection, watch, arr, year, in_list))
+                matched.extend(_apply_local_filters(enriched, collection, watch, arr, year, in_list, my_rating))
             scan_page = batch_end + 1
             if total_tmdb_pages is not None and scan_page > total_tmdb_pages:
                 break
@@ -5362,6 +5464,9 @@ async def get_media_details(
                     ep_data.get("still_path"),
                 )
                 await db.commit()
+            watch_time_minutes = (await get_watch_stats(
+                db, effective_user_id, tmdb_id=tmdb_id, media_type="episode"
+            )).watch_time_minutes
             # Check local info for library tags
             library_info = None
             playable = False
@@ -5432,6 +5537,8 @@ async def get_media_details(
                 "in_lists": ep_state.get("in_lists", []),
                 "user_rating": ep_state.get("user_rating"),
                 "play_count": ep_state.get("play_count", 0),
+                "watch_time_minutes": watch_time_minutes,
+                "last_watched_at": ep_state.get("last_watched_at"),
                 "library": library_info,
             }
         else:
@@ -5516,6 +5623,9 @@ async def get_media_details(
 
         # DB operations must run sequentially — async session doesn't support concurrent use
         await enrich_with_state(db, effective_user_id, [state_item])
+        watch_time_minutes = (await get_watch_stats(
+            db, effective_user_id, tmdb_id=tmdb_id, media_type=type.value
+        )).watch_time_minutes
         where_to_watch = await get_where_to_watch(db, effective_user_id, tmdb_id, MediaType.movie, media=media, tmdb_key=tmdb_key)
         coll_data = await tmdb.get_collection(raw_coll["id"], api_key=tmdb_key) if raw_coll else None
 
@@ -5557,6 +5667,8 @@ async def get_media_details(
             "in_watchlist": state_item.get("in_watchlist", False),
             "user_rating": state_item.get("user_rating"),
             "play_count": state_item.get("play_count", 0),
+            "watch_time_minutes": watch_time_minutes,
+            "last_watched_at": state_item.get("last_watched_at"),
             "in_library": state_item.get("in_library", local_info["in_library"]),
             "collection_pct": state_item.get("collection_pct", 100 if local_info["in_library"] else 0),
             "is_monitored": state_item.get("is_monitored", False),
@@ -5969,7 +6081,8 @@ async def pick_for_me(
 
 
 from fastapi.responses import FileResponse, RedirectResponse
-from jose import jwt, JWTError
+import jwt
+from jwt import PyJWTError
 from core.security import ALGORITHM
 from core.config import settings
 
@@ -6005,7 +6118,7 @@ async def verify_image_token(request: Request, db: AsyncSession = Depends(get_db
             raise credentials_exception
         user_id: int = int(payload.get("sub"))
         return user_id
-    except (JWTError, ValueError):
+    except (PyJWTError, ValueError):
         raise credentials_exception
 
 

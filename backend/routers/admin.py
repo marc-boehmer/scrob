@@ -25,6 +25,7 @@ from dependencies import require_admin
 from core.url_validator import validate_service_url
 from core.backup import asyncpg_conn, restore_backup
 import schemas
+from core.timeutil import utcnow
 
 router = APIRouter()
 
@@ -113,6 +114,22 @@ async def update_global_settings(
     for field, label in url_fields.items():
         if field in update_data and update_data[field]:
             update_data[field] = await validate_service_url(update_data[field], label)
+
+    # NULL/empty is meaningful here (it means aired order, the historical
+    # behaviour), so only a value that is actually set gets validated. Stored
+    # normalised so every reader compares order keys.
+    if update_data.get("default_episode_order"):
+        from core.episode_order import validate_default_episode_order
+
+        try:
+            order_key = validate_default_episode_order(update_data["default_episode_order"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        update_data["default_episode_order"] = order_key
+        if order_key.startswith("tvdb:") and not (
+            update_data.get("tvdb_api_key") or gs.tvdb_api_key
+        ):
+            raise HTTPException(status_code=400, detail="TVDB API key not configured")
 
     for field, value in update_data.items():
         if hasattr(gs, field):
@@ -361,7 +378,7 @@ async def backup_database(_: User = Depends(require_admin)):
                 gz.write(data)
 
         payload = buf.getvalue()
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = utcnow().strftime("%Y%m%d_%H%M%S")
         filename = f"scrob_backup_{timestamp}.bak"
         return Response(
             content=payload,

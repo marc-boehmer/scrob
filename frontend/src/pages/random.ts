@@ -1,6 +1,7 @@
 import type { APIRoute } from "astro";
 import { api } from "../lib/api";
 import { episodeHref } from "../lib/episodeHref";
+import { parseMyRating } from "../lib/my-rating";
 
 export const prerender = false;
 
@@ -25,18 +26,22 @@ export const GET: APIRoute = async ({ url, locals, redirect, request }) => {
     } else if (kind === "explore-movies" || kind === "explore-shows") {
       const isMovie = kind === "explore-movies";
       const genre = p.getAll("genre");
+      const excludedGenres = p.getAll("exclude_genre");
       const year = p.getAll("year").map(Number).filter((n) => !Number.isNaN(n));
       const collection = p.getAll("collection");
       const watch = p.getAll("watch");
       const arr = p.getAll("arr");
       const langs = p.getAll("lang");
+      const excludedLangs = p.getAll("exclude_lang");
       const inList = p.getAll("in_list");
+      const myRating = parseMyRating(url);
       const fetchPage = (page: number) =>
         api.media.tmdbList({
           type: isMovie ? "movie" : "series",
           category: p.get("category") ?? "popular",
           page,
           ...(genre.length ? { genre } : {}),
+          ...(excludedGenres.length ? { exclude_genre: excludedGenres } : {}),
           ...(year.length ? { year } : {}),
           ...(p.get("min_rating") ? { min_rating: Number(p.get("min_rating")) } : {}),
           ...(!isMovie && p.get("status") ? { status: p.get("status")! } : {}),
@@ -44,7 +49,9 @@ export const GET: APIRoute = async ({ url, locals, redirect, request }) => {
           ...(watch.length ? { watch } : {}),
           ...(arr.length ? { arr } : {}),
           ...(langs.length ? { original_language: langs.join("|") } : {}),
+          ...(excludedLangs.length ? { exclude_language: excludedLangs } : {}),
           ...(inList.length ? { in_list: inList } : {}),
+          ...(myRating.length ? { my_rating: myRating } : {}),
         }, token);
 
       const first = await fetchPage(1);
@@ -62,6 +69,7 @@ export const GET: APIRoute = async ({ url, locals, redirect, request }) => {
         year: p.getAll("year").map(Number).filter((n) => !Number.isNaN(n)),
         watched: p.getAll("watched"),
         ...(p.get("in_list") ? { in_list: p.get("in_list")! } : {}),
+        ...(parseMyRating(url).length ? { my_rating: parseMyRating(url) } : {}),
       };
       const fetchPage = (page: number) =>
         kind === "movies"

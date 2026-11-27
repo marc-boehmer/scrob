@@ -1,7 +1,12 @@
-from pydantic import BaseModel, EmailStr, Field, SecretStr, field_validator, model_validator
+import re
+from pydantic import BaseModel, EmailStr, Field, SecretStr, field_validator, model_validator, ConfigDict
+import re
 from typing import Optional
 from datetime import datetime
 from models.base import UserRole, MediaType, PrivacyLevel
+
+# Shape of a BCP 47 language tag ("fr", "pt-BR"); see validate_ui_language.
+UI_LANGUAGE_TAG = re.compile(r"[a-z]{2,3}(-[A-Za-z0-9]{2,8})*")
 
 class UserBase(BaseModel):
     email: EmailStr
@@ -31,8 +36,7 @@ class User(UserBase):
     has_password: bool = True
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class UserLogin(BaseModel):
     username: str
@@ -95,8 +99,7 @@ class DeviceGrantItem(BaseModel):
     approved_at: Optional[datetime] = None
     last_seen_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class TotpSetupResponse(BaseModel):
     provisioning_uri: str
@@ -118,8 +121,7 @@ class TotpBackupCodeItem(BaseModel):
     code: str
     used: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class TotpBackupCodesResponse(BaseModel):
     codes: list[TotpBackupCodeItem]
@@ -233,8 +235,10 @@ class UserSettings(BaseModel):
     blur_explicit: Optional[bool] = None
     time_format_24h: Optional[bool] = None
     use_hls_player: Optional[bool] = None
+    show_play_button: Optional[bool] = None
     shuffle_next_up: Optional[bool] = None
     minimalist_next_up: Optional[bool] = None
+    next_up_by_recent_watch: Optional[bool] = None
     hide_watched_from_recently_added: Optional[bool] = None
     condense_history_by_show: Optional[bool] = None
     rate_prompt_movies: Optional[bool] = None
@@ -245,6 +249,24 @@ class UserSettings(BaseModel):
     email_watchlist_release_dates: Optional[bool] = None
     email_watchlist_streaming: Optional[bool] = None
     duplicate_watch_window_minutes: Optional[int] = Field(default=None, ge=0)
+    # NULL inherits server_episode_order, the admin-configured default below
+    # (read-only, computed).
+    default_episode_order: Optional[str] = None
+    server_episode_order: Optional[str] = None
+    ui_language: Optional[str] = None
+
+    @field_validator("ui_language")
+    @classmethod
+    def validate_ui_language(cls, value):
+        # Only the shape of a language tag is checked here: the frontend's
+        # project.inlang/settings.json is the single list of shipped languages,
+        # and the middleware ignores a stored code that isn't one of them (the
+        # browser language applies instead), so adding a language needs no
+        # backend change.
+        # Capped at the column width (user_settings.ui_language is String(10)).
+        if value is not None and (len(value) > 10 or not UI_LANGUAGE_TAG.fullmatch(value)):
+            raise ValueError(f"Unsupported UI language: {value}")
+        return value
 
     @field_validator("rpdb_api_key", mode="before")
     @classmethod
@@ -252,8 +274,7 @@ class UserSettings(BaseModel):
         from core.rpdb import normalize_api_key
         return normalize_api_key(value) if isinstance(value, str) or value is None else value
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class NuvioLoginRequest(BaseModel):
@@ -360,6 +381,7 @@ class MediaServerConnectionUpdate(BaseModel):
     watchlist_all_users: Optional[bool] = None
     watchlist_monitored_users: Optional[list[str]] = None
     plex_sync_watchlist: Optional[bool] = None
+    scrobble_percent: Optional[int] = Field(default=None, ge=1, le=100)
     plex_push_watchlist: Optional[bool] = None
 
 
@@ -367,6 +389,7 @@ class MediaServerConnectionResponse(MediaServerConnectionBase):
     id: int
     user_id: int
     created_at: datetime
+    scrobble_percent: int = 90
 
     @model_validator(mode="after")
     def redact_cloud_credentials(self):
@@ -374,8 +397,7 @@ class MediaServerConnectionResponse(MediaServerConnectionBase):
             self.token = ""
         return self
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class ScrobbleConnectionCreate(BaseModel):
     type: str
@@ -391,20 +413,25 @@ class ScrobbleConnectionUpdate(BaseModel):
     sync_collection: Optional[bool] = None
     sync_watched: Optional[bool] = None
     sync_playback: Optional[bool] = None
+    scrobble_percent: Optional[int] = Field(default=None, ge=1, le=100)
 
 
 class ScrobbleConnectionResponse(ScrobbleConnectionCreate):
     id: int
     user_id: int
     created_at: datetime
+    scrobble_percent: int = 90
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PasswordUpdate(BaseModel):
     current_password: Optional[str] = None
     new_password: str
+
+class EmailChange(BaseModel):
+    new_email: EmailStr
+    current_password: Optional[str] = None
 
 class WatchEventCreate(BaseModel):
     # Any one of media_id / tmdb_id / tvdb_id identifies the item (see
@@ -424,6 +451,16 @@ class WatchEventCreate(BaseModel):
     # prompt (see the 409 duplicate_watch response from POST /history), to
     # record it despite an existing watch within the dedup window (#390).
     force: bool = False
+    # Where the watch came from, for API clients (#492). Omitted = "manual", the
+    # web UI's own button. Any slug is allowed, so a backfill script can say "plex".
+    source: str = "manual"
+
+    @field_validator("source")
+    @classmethod
+    def _validate_source(cls, v: str) -> str:
+        if not re.fullmatch(r"[a-z0-9_-]{1,16}", v):
+            raise ValueError("source must be 1-16 lowercase letters, digits, '_' or '-'")
+        return v
 
 
 class ManualSessionStart(BaseModel):
@@ -472,8 +509,7 @@ class UserProfileResponse(BaseModel):
     def _none_to_list(cls, v: object) -> list:
         return v if v is not None else []
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class PublicProfileResponse(BaseModel):
     id: int
@@ -528,13 +564,13 @@ class GlobalSettings(BaseModel):
     sonarr_require_approval     : bool = False
     radarr_customize_on_add     : bool = False
     sonarr_customize_on_add     : bool = False
+    default_episode_order       : Optional[str] = None
     image_cache_enabled         : bool = False
     image_cache_limit_gb        : Optional[float] = None
     enable_logged_out_navigation: bool = False
     disable_comments            : bool = False
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class MediaRequestOut(BaseModel):
@@ -549,8 +585,7 @@ class MediaRequestOut(BaseModel):
     created_at  : datetime
     updated_at  : datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AdminUser(BaseModel):
@@ -563,8 +598,7 @@ class AdminUser(BaseModel):
     avatar_url : Optional[str] = None
     totp_enabled : bool = False
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AdminPasswordReset(BaseModel):

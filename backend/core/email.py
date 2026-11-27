@@ -112,6 +112,33 @@ async def send_activation_email(to: str, token: str, *, email_change: bool = Fal
     await send_email(to, subject, html)
 
 
+async def send_email_change_email(to: str, token: str) -> None:
+    link = f"{settings.server_url}/auth/activate/{token}"
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <body style="font-family: sans-serif; background: #18181b; color: #f4f4f5; padding: 40px;">
+      <div style="max-width: 480px; margin: 0 auto; background: #27272a; border: 1px solid #3f3f46; border-radius: 12px; padding: 32px;">
+        <h1 style="font-size: 24px; font-weight: 700; margin-bottom: 8px;">Confirm your new email</h1>
+        <p style="color: #a1a1aa; margin-bottom: 24px;">
+          Click the button below to make this the email address on your Scrob account.
+          This link expires in <strong style="color: #f4f4f5;">24 hours</strong>.
+        </p>
+        <a href="{link}"
+           style="display: inline-block; background: #f4f4f5; color: #09090b; font-weight: 700;
+                  padding: 12px 24px; border-radius: 8px; text-decoration: none;">
+          Confirm new email
+        </a>
+        <p style="color: #71717a; font-size: 12px; margin-top: 24px;">
+          If you didn't ask to change your email, you can safely ignore this message.
+        </p>
+      </div>
+    </body>
+    </html>
+    """
+    await send_email(to, "Confirm your new Scrob email", html)
+
+
 async def send_password_reset_email(to: str, token: str) -> None:
     link = f"{settings.server_url}/reset-password/{token}"
     html = f"""

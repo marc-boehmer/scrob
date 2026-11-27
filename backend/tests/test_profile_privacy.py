@@ -11,7 +11,8 @@ from fastapi import HTTPException
 from models.base import PrivacyLevel, UserRole
 from models.profile import UserProfileData
 from models.users import User
-from routers.profile import follow_user, get_public_profile
+from routers.profile.social import follow_user
+from routers.profile.public_profile import get_public_profile
 from schemas import PublicProfileResponse
 
 

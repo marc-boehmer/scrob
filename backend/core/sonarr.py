@@ -11,9 +11,10 @@ _LIBRARY_TTL = 300.0
 _LIBRARY_FAILURE_TTL = 60.0
 
 
-async def get_all_series_ids(url: str, token: str) -> Optional[Tuple[Set[int], Set[int]]]:
-    """(tmdb ids, tvdb ids) of every series in Sonarr, cached per server;
-    None on failure. tmdbId only exists on Sonarr v4+."""
+async def _get_library(url: str, token: str) -> Optional[Tuple[Set[int], Set[int], Set[int], Set[int]]]:
+    """(tmdb ids, tvdb ids, monitored tmdb ids, monitored tvdb ids) of every
+    series in Sonarr, cached per server; None on failure. tmdbId only exists
+    on Sonarr v4+."""
     key = f"{url.rstrip('/')}|{token}"
     cached = _LIBRARY_CACHE.get(key)
     if cached:
@@ -29,9 +30,12 @@ async def get_all_series_ids(url: str, token: str) -> Optional[Tuple[Set[int], S
             )
             response.raise_for_status()
             series = response.json()
+            monitored = [s for s in series if s.get("monitored")]
             ids = (
                 {s["tmdbId"] for s in series if s.get("tmdbId")},
                 {s["tvdbId"] for s in series if s.get("tvdbId")},
+                {s["tmdbId"] for s in monitored if s.get("tmdbId")},
+                {s["tvdbId"] for s in monitored if s.get("tvdbId")},
             )
         _LIBRARY_CACHE[key] = (time.monotonic(), ids)
         return ids
@@ -39,6 +43,19 @@ async def get_all_series_ids(url: str, token: str) -> Optional[Tuple[Set[int], S
         logger.error(f"Failed to fetch Sonarr series list: {e}")
         _LIBRARY_CACHE[key] = (time.monotonic(), None)
         return None
+
+
+async def get_all_series_ids(url: str, token: str) -> Optional[Tuple[Set[int], Set[int]]]:
+    """(tmdb ids, tvdb ids) of every series in Sonarr; None on failure."""
+    lib = await _get_library(url, token)
+    return lib[:2] if lib else None
+
+
+async def get_monitored_series_ids(url: str, token: str) -> Optional[Tuple[Set[int], Set[int]]]:
+    """(tmdb ids, tvdb ids) of series Sonarr has flagged monitored; None on failure."""
+    lib = await _get_library(url, token)
+    return lib[2:] if lib else None
+
 
 async def validate_connection(url: str, token: str) -> bool:
     """Check if we can connect to Sonarr and if the API key is valid."""

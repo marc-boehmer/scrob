@@ -41,6 +41,11 @@ class WatchEvent(Base):
     # Set when the row was pulled from a cloud service ("wetrakr"), so that service's
     # push never sends the play straight back to where it came from.
     origin           : Mapped[Optional[str]]   = mapped_column(String(16), nullable=True)
+    # Where this play was recorded from (plex, jellyfin, emby, kodi, trakt,
+    # manual, ...), shown in the history view (#477). NULL for rows written
+    # before it was tracked. Unlike origin, which only exists to stop a cloud
+    # service's push echoing a play back to it, this is purely informational.
+    source           : Mapped[Optional[str]]   = mapped_column(String(16), nullable=True)
 
     user  : Mapped["User"]  = relationship(back_populates="watch_events")
     media : Mapped["Media"] = relationship(back_populates="watch_events")

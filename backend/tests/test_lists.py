@@ -21,6 +21,33 @@ def _jsonb_as_json_on_sqlite(type_, compiler, **kw):
     return "JSON"
 
 
+
+def _run_imports_inline(case, session_maker) -> None:
+    """List imports run as background jobs. Make them finish before the
+    endpoint call returns (so the surrounding mocks are still active) and
+    refresh the returned payload's item_count from the DB."""
+    import asyncio
+    from sqlalchemy import func, select
+
+    real_begin = lists._begin_import
+
+    async def settled(db, user, lst, *args, **kwargs):
+        out = await real_begin(db, user, lst, *args, **kwargs)
+        await asyncio.gather(*list(lists._IMPORT_TASKS))
+        out["import"] = lists._public_import_job(lists._IMPORT_JOBS[out["import"]["id"]])
+        async with session_maker() as check:
+            out["item_count"] = (await check.execute(
+                select(func.count()).select_from(ListItem).where(ListItem.list_id == lst.id)
+            )).scalar_one()
+        return out
+
+    for target, new in (("_begin_import", settled), ("_import_session", session_maker)):
+        patcher = patch.object(lists, target, new)
+        patcher.start()
+        case.addCleanup(patcher.stop)
+    case.addCleanup(lists._IMPORT_JOBS.clear)
+
+
 class ParseTmdbListIdTests(unittest.TestCase):
     def test_bare_digits(self) -> None:
         self.assertEqual(lists._parse_tmdb_list_id("1"), 1)
@@ -64,6 +91,7 @@ class ImportTmdbListTests(unittest.IsolatedAsyncioTestCase):
             await conn.run_sync(Base.metadata.create_all)
         self.Session = async_sessionmaker(self.engine, expire_on_commit=False)
         self.addAsyncCleanup(self.engine.dispose)
+        _run_imports_inline(self, self.Session)
 
         from models.users import User
         async with self.Session() as db:
@@ -160,6 +188,52 @@ class ImportTmdbListTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second["item_count"], 2)
 
 
+    async def test_item_cap_is_configurable_and_truncation_reported(self) -> None:
+        from models.media import Media
+        from models.base import MediaType
+
+        async def fake_movie(db, tmdb_id, title, api_key):
+            m = Media(tmdb_id=tmdb_id, media_type=MediaType.movie, title=title)
+            db.add(m)
+            await db.flush()
+            return m
+
+        page = self._page("Big", [
+            {"id": n, "title": f"Movie {n}", "media_type": "movie"} for n in (1, 2, 3)
+        ])
+        page["total_results"] = 3
+
+        async with self.Session() as db:
+            with patch.dict("os.environ", {"LIST_IMPORT_MAX_ITEMS": "2"}), \
+                 patch("core.tmdb.get_list", AsyncMock(return_value=page)), \
+                 patch("routers.trakt._get_or_create_movie_media", AsyncMock(side_effect=fake_movie)), \
+                 patch("routers.media.get_user_tmdb_key", AsyncMock(return_value="fake-key")):
+                result = await lists.import_tmdb_list(
+                    lists.TmdbListImport(list_id_or_url="1"), db=db, current_user=SimpleNamespace(id=1),
+                )
+
+        self.assertEqual(result["item_count"], 2)
+        self.assertTrue(result["import"]["truncated"])
+        self.assertEqual(result["import"]["limit"], 2)
+        self.assertEqual(result["import"]["status"], "completed")
+
+    async def test_job_status_is_private_to_its_owner(self) -> None:
+        page = self._page("L", [])
+        async with self.Session() as db:
+            with patch("core.tmdb.get_list", AsyncMock(return_value=page)), \
+                 patch("routers.media.get_user_tmdb_key", AsyncMock(return_value="fake-key")):
+                result = await lists.import_tmdb_list(
+                    lists.TmdbListImport(list_id_or_url="1"), db=db, current_user=SimpleNamespace(id=1),
+                )
+        job_id = result["import"]["id"]
+        mine = await lists.get_import_job(job_id, current_user=SimpleNamespace(id=1))
+        self.assertEqual(mine["status"], "completed")
+        self.assertFalse(mine["truncated"])
+        with self.assertRaises(Exception) as ctx:
+            await lists.get_import_job(job_id, current_user=SimpleNamespace(id=2))
+        self.assertEqual(getattr(ctx.exception, "status_code", None), 404)
+
+
 class ParseTvdbListRefTests(unittest.TestCase):
     def test_bare_digits(self) -> None:
         self.assertEqual(lists._parse_tvdb_list_ref("13131"), "13131")
@@ -200,6 +274,7 @@ class ImportTvdbListTests(unittest.IsolatedAsyncioTestCase):
             await conn.run_sync(Base.metadata.create_all)
         self.Session = async_sessionmaker(self.engine, expire_on_commit=False)
         self.addAsyncCleanup(self.engine.dispose)
+        _run_imports_inline(self, self.Session)
 
         from models.users import User
         async with self.Session() as db:
@@ -349,6 +424,7 @@ class ImportImdbListTests(unittest.IsolatedAsyncioTestCase):
             await conn.run_sync(Base.metadata.create_all)
         self.Session = async_sessionmaker(self.engine, expire_on_commit=False)
         self.addAsyncCleanup(self.engine.dispose)
+        _run_imports_inline(self, self.Session)
 
         from models.users import User
         async with self.Session() as db:
@@ -458,6 +534,22 @@ class ParseMdblistListRefTests(unittest.TestCase):
             "alice/my-favourites",
         )
 
+    def test_non_ascii_and_percent_encoded_slugs(self) -> None:
+        self.assertEqual(
+            lists._parse_mdblist_list_ref("https://mdblist.com/lists/Alice/Pr\u00e9f\u00e9r\u00e9s"),
+            "alice/pr\u00e9f\u00e9r\u00e9s",
+        )
+        self.assertEqual(
+            lists._parse_mdblist_list_ref(
+                "https://mdblist.com/lists/alice/pr%C3%A9f%C3%A9r%C3%A9s/?x=1"
+            ),
+            "alice/pr\u00e9f\u00e9r\u00e9s",
+        )
+        self.assertEqual(
+            lists._parse_mdblist_list_ref("alice/pr\u00e9f\u00e9r\u00e9s"),
+            "alice/pr\u00e9f\u00e9r\u00e9s",
+        )
+
     def test_garbage_is_rejected(self) -> None:
         self.assertIsNone(lists._parse_mdblist_list_ref("just-a-slug"))
         self.assertIsNone(lists._parse_mdblist_list_ref("https://mdblist.com/search"))
@@ -475,6 +567,7 @@ class ImportMdblistListTests(unittest.IsolatedAsyncioTestCase):
             await conn.run_sync(Base.metadata.create_all)
         self.Session = async_sessionmaker(self.engine, expire_on_commit=False)
         self.addAsyncCleanup(self.engine.dispose)
+        _run_imports_inline(self, self.Session)
 
         from models.global_settings import GlobalSettings
         from models.users import User, UserSettings
@@ -528,7 +621,7 @@ class ImportMdblistListTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["item_count"], 2)
         get_list.assert_awaited_once_with("global-mdb-key", "alice/mixed-favourites")
         get_items.assert_awaited_once_with(
-            "global-mdb-key", "alice/mixed-favourites", max_items=500
+            "global-mdb-key", "alice/mixed-favourites", max_items=10001
         )
 
         async with self.Session() as db:
@@ -550,9 +643,66 @@ class ClearAllListsTests(unittest.IsolatedAsyncioTestCase):
         response = await lists.clear_all_lists(db=db, current_user=SimpleNamespace(id=7))
 
         self.assertEqual(response["status"], "ok")
-        db.execute.assert_awaited_once()
-        stmt = db.execute.call_args.args[0]
-        self.assertEqual(stmt.table.name, ListModel.__tablename__)
+        tables = [call.args[0].table.name for call in db.execute.await_args_list]
+        self.assertEqual(tables[0], ListModel.__tablename__)
+        db.commit.assert_awaited_once()
+
+    async def test_also_resets_watchlist_baselines(self) -> None:
+        # The watchlist is gone, so its baselines must be too - or the next
+        # reconcile reads every synced title as removed in Scrob.
+        db = SimpleNamespace(execute=AsyncMock(), commit=AsyncMock())
+
+        await lists.clear_all_lists(db=db, current_user=SimpleNamespace(id=7))
+
+        tables = [call.args[0].table.name for call in db.execute.await_args_list]
+        self.assertEqual(tables, ["lists", "user_settings", "media_server_connections"])
+
+
+class UpdateWatchlistTests(unittest.IsolatedAsyncioTestCase):
+    def _db(self, lst):
+        found = SimpleNamespace(scalar_one_or_none=lambda: lst, scalar_one=lambda: lst)
+        return SimpleNamespace(execute=AsyncMock(return_value=found), commit=AsyncMock())
+
+    def _watchlist(self):
+        return SimpleNamespace(
+            id=3, user_id=7, name="Watchlist", description=None, privacy_level="private",
+            is_watchlist=True, items=[], trakt_slug=None, mdblist_slug=None,
+        )
+
+    async def test_watchlist_cannot_be_renamed(self) -> None:
+        from fastapi import HTTPException
+        from routers.lists import ListUpdate
+
+        lst = self._watchlist()
+        with self.assertRaises(HTTPException) as ctx:
+            await lists.update_list(3, ListUpdate(name="Mine"), db=self._db(lst), current_user=SimpleNamespace(id=7))
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(lst.name, "Watchlist")
+
+    async def test_watchlist_cannot_be_made_public(self) -> None:
+        from fastapi import HTTPException
+        from routers.lists import ListUpdate
+
+        lst = self._watchlist()
+        with self.assertRaises(HTTPException) as ctx:
+            await lists.update_list(3, ListUpdate(privacy_level="public"), db=self._db(lst), current_user=SimpleNamespace(id=7))
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(lst.privacy_level, "private")
+
+    async def test_watchlist_accepts_unchanged_values_and_a_description(self) -> None:
+        from routers.lists import ListUpdate
+
+        lst = self._watchlist()
+        db = self._db(lst)
+        with patch.object(lists, "_format_list", return_value={}):
+            await lists.update_list(
+                3, ListUpdate(name="Watchlist", privacy_level="private", description="Things to watch"),
+                db=db, current_user=SimpleNamespace(id=7),
+            )
+
+        self.assertEqual(lst.description, "Things to watch")
         db.commit.assert_awaited_once()
 
 
