@@ -266,6 +266,7 @@ export interface WatchEvent {
   watched_at: string | null;
   completed: boolean;
   progress_percent: number | null;
+  play_count?: number;
   source?: string | null;
 }
 

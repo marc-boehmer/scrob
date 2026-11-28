@@ -1,0 +1,115 @@
+---
+import Base from "../../../layouts/Base.astro";
+import { m } from "../../../paraglide/messages.js";
+export const prerender = false;
+
+const { id } = Astro.params;
+const { token } = Astro.locals;
+const currentYear = new Date().getFullYear();
+const requestedYear = Number(Astro.url.searchParams.get("year"));
+const year = Number.isInteger(requestedYear) && requestedYear >= 1900 && requestedYear <= currentYear
+  ? requestedYear
+  : currentYear;
+
+let accessError = "";
+try {
+  const res = await fetch(
+    `http://localhost:${import.meta.env.BACKEND_PORT ?? "7331"}/profile/${id}`,
+    token ? { headers: { Authorization: `Bearer ${token}` } } : {}
+  );
+  if (res.status === 404) accessError = m.profile_not_found();
+  else if (res.status === 403) accessError = m.profile_private();
+  else if (!res.ok) accessError = m.profile_load_failed();
+} catch {
+  accessError = m.profile_load_failed();
+}
+---
+
+<Base title={m.stats_rewind()}>
+  <div class="max-w-5xl mx-auto py-8 space-y-8">
+    {accessError ? (
+      <div class="max-w-md mx-auto mt-20 text-center">
+        <div class="bg-zinc-900/50 border border-zinc-800 p-10 rounded-3xl">
+          <h1 class="text-2xl font-black text-zinc-100 mb-2">{m.profile_access_restricted()}</h1>
+          <p class="text-zinc-400 font-medium mb-8">{accessError}</p>
+          <a href="/" class="px-6 py-3 bg-sky-600 hover:bg-sky-500 text-white font-black rounded-xl transition-all inline-block">
+            {m.common_return_home()}
+          </a>
+        </div>
+      </div>
+    ) : (
+      <>
+        <div>
+          <a href={`/stats/${id}`} class="text-xs font-bold text-zinc-500 hover:text-zinc-300 uppercase tracking-widest transition flex items-center gap-1.5 mb-3">
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+            {m.nav_statistics()}
+          </a>
+          <div class="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <p class="text-sm font-bold uppercase tracking-[0.2em] text-sky-400">{m.stats_rewind()}</p>
+              <h1 class="page-title mt-2">{m.stats_rewind_heading({ year })}</h1>
+              <p class="text-zinc-400 mt-2">{m.stats_rewind_description({ year })}</p>
+            </div>
+            <nav aria-label={m.stats_rewind_year()} class="flex items-center gap-2">
+              <a href={`/stats/${id}/rewind?year=${year - 1}`} aria-label={m.stats_rewind_previous_year()} class="w-10 h-10 flex items-center justify-center rounded-xl bg-zinc-900 border border-zinc-800 hover:border-zinc-600 text-zinc-300 transition">
+                <span aria-hidden="true">←</span>
+              </a>
+              <span class="min-w-16 text-center text-lg font-black text-zinc-100">{year}</span>
+              {year < currentYear ? (
+                <a href={`/stats/${id}/rewind?year=${year + 1}`} aria-label={m.stats_rewind_next_year()} class="w-10 h-10 flex items-center justify-center rounded-xl bg-zinc-900 border border-zinc-800 hover:border-zinc-600 text-zinc-300 transition">
+                  <span aria-hidden="true">→</span>
+                </a>
+              ) : (
+                <span aria-hidden="true" class="w-10 h-10"></span>
+              )}
+            </nav>
+          </div>
+        </div>
+
+        <div
+          id="rewind-content"
+          class="space-y-6"
+          data-user-id={id}
+          data-token={token ?? ""}
+          data-year={year}
+          data-error-text={m.stats_rewind_load_failed()}
+        >
+          <div id="rewind-error" role="alert" class="hidden bg-red-950/40 border border-red-900/60 text-red-200 rounded-xl p-4"></div>
+          <div id="rewind-summary" class="grid grid-cols-2 lg:grid-cols-4 gap-3" aria-live="polite">
+            {[...Array(4)].map(() => (
+              <div class="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-5 animate-pulse">
+                <div class="h-8 w-16 bg-zinc-800 rounded-lg mb-2"></div>
+                <div class="h-3 w-24 bg-zinc-800 rounded"></div>
+              </div>
+            ))}
+          </div>
+
+          <section class="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-6">
+            <h2 class="group-label mb-5">{m.stats_rewind_monthly_activity()}</h2>
+            <div id="rewind-months" class="min-h-36"></div>
+          </section>
+
+          <section class="grid md:grid-cols-2 gap-6">
+            <div class="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-6">
+              <h2 class="group-label mb-5">{m.stats_most_played_movies()}</h2>
+              <div id="rewind-movies" class="grid grid-cols-3 gap-3"></div>
+            </div>
+            <div class="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-6">
+              <h2 class="group-label mb-5">{m.stats_most_played_shows()}</h2>
+              <div id="rewind-shows" class="grid grid-cols-3 gap-3"></div>
+            </div>
+          </section>
+
+          <section class="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-6">
+            <h2 class="group-label mb-5">{m.stats_most_watched_genres()}</h2>
+            <div id="rewind-genres" class="flex flex-wrap gap-2"></div>
+          </section>
+        </div>
+      </>
+    )}
+  </div>
+</Base>
+
+<script>
+  import "../../../lib/stats/rewind";
+</script>

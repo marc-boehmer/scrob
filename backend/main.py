@@ -854,8 +854,12 @@ async def lifespan(app: FastAPI):
     simkl_token_task = asyncio.create_task(_simkl_token_refresher())
     rating_digest_task = asyncio.create_task(_rating_digest_mailer())
     watchlist_alert_task = asyncio.create_task(_watchlist_alert_mailer())
+    from core.runtime_backfill import run_runtime_backfill
+    runtime_backfill_task = asyncio.create_task(run_runtime_backfill(async_session))
 
     yield
+
+    runtime_backfill_task.cancel()
 
     rating_digest_task.cancel()
     watchlist_alert_task.cancel()

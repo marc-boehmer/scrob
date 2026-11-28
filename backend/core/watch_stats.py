@@ -3,7 +3,7 @@ from typing import NamedTuple
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.media_runtime import effective_runtime_expression
+from core.media_runtime import effective_watch_time_expression
 from models.events import WatchEvent
 from models.media import Media
 
@@ -23,13 +23,12 @@ async def get_watch_stats(
     media_type: str | None = None,
     show_id: int | None = None,
 ) -> WatchStats:
-    runtime = effective_runtime_expression()
     # A pull from Jellyfin/Plex/Emby stores a title's whole play count on one
     # event (play_count=3 for three plays), so a play is not always one row
     # (#567). Every other source writes 1.
     plays_per_event = case((WatchEvent.play_count > 1, WatchEvent.play_count), else_=1)
     watch_time = func.coalesce(
-        func.sum(case((WatchEvent.completed == True, runtime * plays_per_event), else_=0)),
+        func.sum(case((WatchEvent.completed == True, effective_watch_time_expression()), else_=0)),
         0,
     )
     last_watched_at = func.max(case((WatchEvent.completed == True, WatchEvent.watched_at)))

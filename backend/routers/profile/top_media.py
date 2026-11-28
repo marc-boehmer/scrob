@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.media_runtime import effective_runtime_expression
+from core.media_runtime import effective_watch_time_expression
 from db import get_db
 from dependencies import get_optional_user_or_api_key
 from models.base import MediaType
@@ -35,10 +35,11 @@ async def _top_media(
     database (one row per title comes back, not one per play), and `limit`
     keeps only the top N of each."""
     plays = func.count(WatchEvent.id)
-    minutes = func.coalesce(func.sum(effective_runtime_expression()), 0)
+    minutes = func.coalesce(func.sum(effective_watch_time_expression()), 0)
 
     movies_query = (
         select(Media.id, Media.title, Media.poster_path, Media.tmdb_id, plays.label("plays"), minutes.label("minutes"))
+        .select_from(Media)
         .join(WatchEvent, WatchEvent.media_id == Media.id)
         .where(WatchEvent.user_id == user_id, Media.media_type == MediaType.movie, *date_filters)
         .group_by(Media.id)
@@ -49,6 +50,7 @@ async def _top_media(
             Media.show_id, plays.label("plays"), minutes.label("minutes"),
             func.count(func.distinct(Media.id)).label("episodes"),
         )
+        .select_from(Media)
         .join(WatchEvent, WatchEvent.media_id == Media.id)
         .where(
             WatchEvent.user_id == user_id,
