@@ -211,11 +211,11 @@ const COUNTRIES = [
       <!-- Account email -->
       <section>
         <div class="mb-4 border-b border-zinc-800 pb-2">
-          <h2 class="section-headline">Account Email</h2>
+          <h2 class="section-headline">{m.settings_change_email()}</h2>
         </div>
         <div class="max-w-lg space-y-3">
-          <p class="text-sm text-zinc-400">Current email: <span class="text-zinc-200">{me.email}</span></p>
-          <label for="new-email" class="block text-sm font-medium text-zinc-400">New email address</label>
+          <p class="text-sm text-zinc-400">{m.settings_current_email()} <span class="text-zinc-200">{me.email}</span></p>
+          <label for="new-email" class="block text-sm font-medium text-zinc-400">{m.settings_new_email()}</label>
           <div class="flex flex-col sm:flex-row gap-3">
             <input
               type="email"
@@ -229,9 +229,9 @@ const COUNTRIES = [
               id="change-email-btn"
               type="button"
               class="px-5 py-3 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 font-medium rounded-lg transition-colors cursor-pointer disabled:opacity-50"
-            >Change Email</button>
+            >{m.settings_change_email()}</button>
           </div>
-          <p class="text-xs text-zinc-500">We’ll email a confirmation link to the new address. Your current email stays in use until you confirm it. SMTP must be configured.</p>
+          <p class="text-xs text-zinc-500">{m.settings_email_change_hint()}</p>
         </div>
       </section>
 
@@ -551,7 +551,7 @@ const COUNTRIES = [
       if (!emailInput || !emailInput.reportValidity()) return;
       changeEmailBtn.disabled = true;
       const originalText = changeEmailBtn.textContent;
-      changeEmailBtn.textContent = 'Sending…';
+      changeEmailBtn.textContent = m.settings_email_sending();
       try {
         const res = await fetch('/api/proxy/auth/change-email', {
           method: 'POST',
@@ -559,11 +559,11 @@ const COUNTRIES = [
           body: JSON.stringify({ email: emailInput.value }),
         });
         const data = await res.json() as { detail?: string; message?: string };
-        if (!res.ok) throw new Error(data.detail ?? 'Could not request an email change.');
-        showMessage(data.message ?? 'Confirmation link sent to the new email address.');
+        if (!res.ok) throw new Error(data.detail ?? m.settings_update_email_failed());
+        showMessage(data.message ?? m.settings_email_confirmation_sent({ email: emailInput.value }));
         emailInput.value = '';
       } catch (e: unknown) {
-        showMessage(e instanceof Error ? e.message : 'Could not request an email change.', 'error');
+        showMessage(e instanceof Error ? e.message : m.settings_update_email_failed(), 'error');
       } finally {
         changeEmailBtn.disabled = false;
         changeEmailBtn.textContent = originalText;

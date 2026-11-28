@@ -2,6 +2,7 @@
 import Base from "../layouts/Base.astro";
 import MediaCard from "../components/MediaCard.astro";
 import { api, type MediaItem } from "../lib/api";
+import { m } from "../paraglide/messages.js";
 export const prerender = false;
 
 const { token } = Astro.locals;
@@ -21,36 +22,36 @@ try {
 const total = movies.length + shows.length;
 ---
 
-<Base title="Watchlist">
+<Base title={m.nav_watchlist()}>
   <div class="mb-8">
     <div class="flex items-center justify-between gap-4 mb-2">
-      <h1 class="page-title">Watchlist</h1>
+      <h1 class="page-title">{m.nav_watchlist()}</h1>
       {total > 0 && <a href="/random?kind=watchlist" title="Open a random title" class="flex items-center gap-2 bg-zinc-900 border border-zinc-800 text-zinc-200 text-sm rounded-lg px-3 py-2 hover:border-zinc-600 transition active:scale-95 active:opacity-70">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22"/><path d="m18 2 4 4-4 4"/><path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"/><path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"/><path d="m18 14 4 4-4 4"/></svg>
-        Random
+        {m.watchlist_random()}
       </a>}
     </div>
     <p class="text-zinc-500">
-      {total > 0 ? `${total} title${total === 1 ? "" : "s"} saved to watch later.` : "Movies and shows you want to watch will appear here."}
+      {total > 0 ? m.watchlist_saved_count({ count: total }) : m.watchlist_intro()}
     </p>
   </div>
 
   {failed && (
     <div class="text-center py-20 text-zinc-500">
-      <p class="text-lg">Couldn't load your watchlist.</p>
+      <p class="text-lg">{m.watchlist_load_failed()}</p>
     </div>
   )}
 
   {!failed && total === 0 && (
     <div class="text-center py-20 text-zinc-500">
-      <p class="text-lg">Your watchlist is empty.</p>
-      <p class="text-sm mt-2">Save a movie or show with the bookmark button to find it here.</p>
+      <p class="text-lg">{m.watchlist_empty()}</p>
+      <p class="text-sm mt-2">{m.watchlist_empty_hint()}</p>
     </div>
   )}
 
   {shows.length > 0 && (
     <section class="mb-12">
-      <h2 class="section-headline mb-4">Shows</h2>
+      <h2 class="section-headline mb-4">{m.common_shows()}</h2>
       <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6">
         {shows.map((item) => <MediaCard item={item} showWatchlistAction={false} isWatchlistItem />)}
       </div>
@@ -59,7 +60,7 @@ const total = movies.length + shows.length;
 
   {movies.length > 0 && (
     <section class="mb-12">
-      <h2 class="section-headline mb-4">Movies</h2>
+      <h2 class="section-headline mb-4">{m.common_movies()}</h2>
       <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6">
         {movies.map((item) => <MediaCard item={item} showWatchlistAction={false} isWatchlistItem />)}
       </div>

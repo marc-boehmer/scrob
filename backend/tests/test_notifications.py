@@ -1,5 +1,7 @@
 import os
+import importlib
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, call, patch
 
@@ -12,7 +14,64 @@ from core.notifications import email_friend_media_share, notify_friends_of_ratin
 from models.base import MediaType
 from models.notification import Notification
 from models.profile import PrivacyLevel
-from routers.notifications import MediaShareRequest, _notification_media, share_media
+from routers.notifications import (
+    GERMAN_RELEASE_ANNOUNCEMENTS,
+    MediaShareRequest,
+    _localize_release_announcement,
+    _notification_media,
+    list_notifications,
+    share_media,
+)
+
+
+class ReleaseAnnouncementTranslationTests(unittest.TestCase):
+    def test_known_release_text_matches_migrations(self):
+        for module in (
+            "notifications12_announce_year_range_filter",
+            "notifications13_announce_upstream_features",
+            "notifications14_announce_language_and_email",
+            "notifications15_announce_german_translation",
+        ):
+            migration = importlib.import_module(f"migrations.versions.{module}")
+            self.assertEqual(GERMAN_RELEASE_ANNOUNCEMENTS[migration.TITLE][0], migration.BODY)
+
+    def test_translates_all_known_announcements_without_losing_appended_sections(self):
+        entries = list(GERMAN_RELEASE_ANNOUNCEMENTS.items())
+        first_title, (first_body, first_de_title, first_de_body) = entries[0]
+        appended = "\n\n".join(f"{title}: {values[0]}" for title, values in entries[1:])
+        title, body = _localize_release_announcement("de-DE", first_title, f"{first_body}\n\n{appended}")
+        self.assertEqual(title, first_de_title)
+        self.assertEqual(body, "\n\n".join(
+            [first_de_body] + [f"{values[1]}: {values[2]}" for _, values in entries[1:]]
+        ))
+
+    def test_preserves_unknown_and_modified_contents(self):
+        title, (original, _, _) = next(iter(GERMAN_RELEASE_ANNOUNCEMENTS.items()))
+        custom = f"{original} Custom content.\n\nA note added by an administrator."
+        self.assertEqual(_localize_release_announcement("de", title, custom), (title, custom))
+        self.assertEqual(_localize_release_announcement("fr", title, original), (title, original))
+        self.assertEqual(_localize_release_announcement("de", "Unknown", "Unrecognized note"), ("Unknown", "Unrecognized note"))
+
+
+class NotificationLocaleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_old_release_note_is_localized_without_changing_stored_content(self):
+        title, (original, translated_title, translated_body) = next(iter(GERMAN_RELEASE_ANNOUNCEMENTS.items()))
+        note = SimpleNamespace(id=12, title=title, body=original, version="1.0")
+        notification = SimpleNamespace(
+            id=5, actor_id=None, type="release_announcement", media_id=None,
+            release_announcement_id=12, is_read=False, created_at=datetime(2026, 1, 1),
+            rating=None, shared_comment=None, shared_media_title=None, shared_media_link=None,
+        )
+        db = SimpleNamespace(execute=AsyncMock(side_effect=[
+            _Scalar(SimpleNamespace(ui_language="de")), _Rows([notification]), _Rows([note]),
+        ]))
+        with patch("routers.notifications._people", AsyncMock(return_value={})), \
+             patch("routers.notifications._unread_count", AsyncMock(return_value=1)):
+            response = await list_notifications(SimpleNamespace(id=1), db)
+        self.assertEqual(response["notifications"][0]["announcement"], {
+            "version": "1.0", "title": translated_title, "body": translated_body,
+        })
+        self.assertEqual((note.title, note.body), (title, original))
 
 
 class _Scalar:
@@ -188,9 +247,10 @@ class EmailNotificationTests(unittest.IsolatedAsyncioTestCase):
             execute=AsyncMock(return_value=_Scalar(True)),
         )
         with patch("core.email.email_enabled", return_value=True), \
+             patch("core.notifications.get_user_email_language", AsyncMock(return_value="de")), \
              patch("core.email.send_friend_media_share_email", AsyncMock()) as send:
             await email_friend_media_share(db, 1, 2, "Example", "/show/123")
-        send.assert_awaited_once_with("a@x.io", "Bob", "Example", "/show/123", None, None)
+        send.assert_awaited_once_with("a@x.io", "Bob", "Example", "/show/123", None, None, language="de")
 
     async def test_friend_media_share_email_respects_opt_out(self):
         recipient = SimpleNamespace(email="a@x.io", email_confirmed=True)
@@ -256,9 +316,10 @@ class EmailNotificationTests(unittest.IsolatedAsyncioTestCase):
         requester = SimpleNamespace(display_name="Bob")
         db = SimpleNamespace(get=AsyncMock(side_effect=[addressee, requester]), execute=AsyncMock(return_value=_Scalar(None)))
         with patch("core.email.email_enabled", return_value=True), \
+             patch("core.notifications.get_user_email_language", AsyncMock(return_value="fr")), \
              patch("core.email.send_friend_request_email", AsyncMock()) as send:
             await email_friend_request(db, 1, 2)
-        send.assert_awaited_once_with("a@x.io", "Bob")
+        send.assert_awaited_once_with("a@x.io", "Bob", language="fr")
 
     async def test_friend_request_email_skipped_when_user_opted_out(self):
         from core.notifications import email_friend_request

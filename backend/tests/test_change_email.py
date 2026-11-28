@@ -46,6 +46,7 @@ class ChangeEmailTests(unittest.IsolatedAsyncioTestCase):
         body = schemas.EmailChange(new_email=new_email, current_password=password)
         with patch.object(auth, "verify_password", return_value=verified), \
              patch.object(auth.app_settings, "require_email_validation", validation), \
+             patch.object(auth, "get_user_email_language", new_callable=AsyncMock, return_value="de"), \
              patch.object(auth, "send_email_change_email", new_callable=AsyncMock) as send:
             out = await auth.change_email(_request(), body, db, user)
         return out, db, send
@@ -66,6 +67,7 @@ class ChangeEmailTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((activation.user_id, activation.email), (7, "new@example.com"))
         send.assert_awaited_once()
         self.assertEqual(send.await_args.args[0], "new@example.com")
+        self.assertEqual(send.await_args.kwargs["language"], "de")
 
     async def test_wrong_password_is_rejected(self):
         user = _user()

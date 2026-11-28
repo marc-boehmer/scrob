@@ -8,6 +8,7 @@ import { isSecureRequest } from "../lib/secureCookie";
 import LanguagePicker from "../components/LanguagePicker.astro";
 import { escapeHtml } from "../lib/format";
 import { m } from "../paraglide/messages.js";
+import { getLocale } from "../paraglide/runtime.js";
 
 let error = "";
 let pendingEmailConfirmation = false;
@@ -36,7 +37,7 @@ if (Astro.request.method === "POST") {
       throw new Error(m.register_passwords_mismatch());
     }
 
-    const newUser = await api.auth.register({ email, username, password });
+    const newUser = await api.auth.register({ email, username, password, ui_language: getLocale() });
 
     if (!newUser.email_confirmed) {
       pendingEmailConfirmation = true;

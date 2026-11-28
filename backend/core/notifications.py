@@ -5,6 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from core.friends import friend_ids
+from core.email_language import get_user_email_language
+from core.email_events import season_title
 from models.follows import Follow
 from models.notification import Notification
 from models.profile import PrivacyLevel, UserProfileData
@@ -73,7 +75,8 @@ async def email_friend_request(db: AsyncSession, requester_id: int, addressee_id
             logger.info("Friend request email skipped: user %s disabled it", addressee_id)
             return
         logger.info("Sending friend request email to user %s", addressee_id)
-        await send_friend_request_email(addressee.email, requester.display_name)
+        language = await get_user_email_language(db, addressee_id)
+        await send_friend_request_email(addressee.email, requester.display_name, language=language)
     except Exception:
         logger.exception("Failed to send friend request email")
 
@@ -125,7 +128,8 @@ async def email_friend_media_share(
         if enabled is False:
             logger.info("Media-share email skipped: user %s disabled it", recipient_id)
             return
-        await send_friend_media_share_email(recipient.email, sender.display_name, title, link, rating, comment)
+        language = await get_user_email_language(db, recipient_id)
+        await send_friend_media_share_email(recipient.email, sender.display_name, title, link, rating, comment, language=language)
     except Exception:
         logger.exception("Failed to send media-share email to user %s", recipient_id)
 
@@ -169,6 +173,7 @@ async def send_rating_digests(db: AsyncSession) -> int:
     sent = 0
     for user_id, notes in by_user.items():
         user = users.get(user_id)
+        language = await get_user_email_language(db, user_id)
         items = []
         for n in notes:
             m, actor = media.get(n.media_id), users.get(n.actor_id)
@@ -176,7 +181,7 @@ async def send_rating_digests(db: AsyncSession) -> int:
                 continue
             title = m.show.title if m.media_type == "episode" and m.show else m.title
             if n.season_number is not None:
-                title = f"{title} (season {n.season_number})"
+                title = season_title(title, n.season_number, language)
             items.append((actor.display_name, title, n.rating))
         # Mark first so a failing mail server can't cause the same digest to be resent forever.
         await db.execute(update(Notification).where(Notification.id.in_([n.id for n in notes])).values(emailed_at=func.now()))
@@ -184,7 +189,7 @@ async def send_rating_digests(db: AsyncSession) -> int:
         if not items or not user or not user.email_confirmed or user_id in opted_out:
             continue
         try:
-            await send_rating_digest_email(user.email, items)
+            await send_rating_digest_email(user.email, items, language=language)
             sent += 1
         except Exception:
             logger.exception("Failed to send rating digest to user %s", user_id)

@@ -11,6 +11,7 @@ from models.profile import UserProfileData
 from models.users import User, UserSettings
 from models.watchlist import WatchlistItem
 from models.watchlist_alert import WatchlistAlertState
+from core.email_events import release_event, streaming_event
 
 logger = logging.getLogger("watchlist_alerts")
 
@@ -86,6 +87,8 @@ async def send_watchlist_alerts(db: AsyncSession, today: date | None = None) -> 
             await db.flush()
 
         events: list[tuple[str, str]] = []
+        email_events: list[str] = []
+        language = user_settings.ui_language if user_settings else None
         release_pending = False
         release_day = release_date_due(media.release_date, watchlist_item.added_at, today)
         if state.release_notified_at is None and media.release_date:
@@ -100,6 +103,7 @@ async def send_watchlist_alerts(db: AsyncSession, today: date | None = None) -> 
                         f"Theatrical release date reached: {release_day.strftime('%B')} "
                         f"{release_day.day}, {release_day.year}",
                     ))
+                    email_events.append(release_event(release_day, language))
                     release_pending = True
                 else:
                     state.release_notified_at = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -129,6 +133,7 @@ async def send_watchlist_alerts(db: AsyncSession, today: date | None = None) -> 
                         if added_ids:
                             names = sorted(current_providers[provider_id] for provider_id in added_ids)
                             events.append((WATCHLIST_STREAMING, f"Now available to stream on {', '.join(names)}"))
+                            email_events.append(streaming_event(names, language))
                     provider_ids = current_ids
                 except Exception:
                     logger.exception(
@@ -167,7 +172,7 @@ async def send_watchlist_alerts(db: AsyncSession, today: date | None = None) -> 
             raise
         if events and mail_available and user.email_confirmed:
             try:
-                await send_watchlist_alert_email(user.email, media.title, link, [text for _, text in events])
+                await send_watchlist_alert_email(user.email, media.title, link, email_events, language=language)
             except Exception:
                 logger.exception(
                     "Could not send watchlist alert for item %s (user %s)",

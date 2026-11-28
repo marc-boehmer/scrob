@@ -7,6 +7,7 @@ import { getLocale } from "../paraglide/runtime.js";
 import { m } from "../paraglide/messages.js";
 import { watchSourceIconHtml } from "../lib/connectionIcons";
 import { WATCH_SOURCES, watchSourceLabel } from "../lib/media-format";
+import { use24HourTime } from "../lib/timeFormat";
 
 interface Props {
   title: string;
@@ -43,7 +44,7 @@ if (user?.is_admin && token) {
 // Catalog navigation and search are public; user collections remain private.
 const showAnonNavLinks = !user;
 const blurExplicit = Astro.cookies.get("blur_explicit")?.value !== "false";
-const use24h = Astro.cookies.get("time_format_24h")?.value === "true";
+const use24h = use24HourTime(Astro.locals.settings?.time_format_24h, Astro.cookies.get("time_format_24h")?.value);
 
 const pathname = Astro.url.pathname;
 // Pre-fills the nav search box with the query already being viewed, so
@@ -256,21 +257,21 @@ const bottomNavItem = (active: boolean) =>
           </button>
           {user && (
             <div class="relative">
-              <button id="notif-btn" class="relative p-3 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 transition-colors cursor-pointer" aria-label="Notifications" aria-haspopup="true">
+              <button id="notif-btn" class="relative p-3 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 transition-colors cursor-pointer" aria-label={m.notifications_title()} aria-haspopup="true">
                 <svg xmlns="http://www.w3.org/2000/svg" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
                 <span id="notif-badge" class="hidden absolute -top-1 -right-1 min-w-[1.1rem] h-[1.1rem] px-1 items-center justify-center text-[10px] font-bold bg-blue-500 text-white rounded-full border-2 border-zinc-950"></span>
               </button>
               <div id="notif-panel" class="hidden fixed sm:absolute left-3 right-3 sm:left-auto sm:right-0 top-16 sm:top-full mt-0 sm:mt-3 sm:w-96 z-50">
                 <div class="bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl overflow-hidden text-sm">
                   <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
-                    <span class="font-bold text-zinc-100">Notifications</span>
+                    <span class="font-bold text-zinc-100">{m.notifications_title()}</span>
                     <div class="flex items-center gap-3">
-                      <button id="notif-read-all" class="hidden text-xs font-semibold text-blue-400 hover:text-blue-300 cursor-pointer">Mark all as read</button>
-                      <button id="notif-clear" class="hidden text-xs font-semibold text-red-400 hover:text-red-300 cursor-pointer">Clear all</button>
+                      <button id="notif-read-all" class="hidden text-xs font-semibold text-blue-400 hover:text-blue-300 cursor-pointer">{m.notifications_mark_all_read()}</button>
+                      <button id="notif-clear" class="hidden text-xs font-semibold text-red-400 hover:text-red-300 cursor-pointer">{m.notifications_clear_all()}</button>
                     </div>
                   </div>
                   <ul id="notif-list" class="max-h-96 overflow-y-auto divide-y divide-zinc-800/60"></ul>
-                  <p id="notif-empty" class="hidden px-4 py-8 text-center text-zinc-500">No notifications yet.</p>
+                  <p id="notif-empty" class="hidden px-4 py-8 text-center text-zinc-500">{m.notifications_empty()}</p>
                 </div>
               </div>
             </div>
@@ -395,14 +396,14 @@ const bottomNavItem = (active: boolean) =>
 
   {user && (
     <div id="release-announcement-modal" class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" role="dialog" aria-modal="true" aria-labelledby="release-announcement-title">
-      <button id="release-announcement-backdrop" type="button" class="absolute inset-0 cursor-default" aria-label="Close announcement"></button>
+      <button id="release-announcement-backdrop" type="button" class="absolute inset-0 cursor-default" aria-label={m.common_close()}></button>
       <section class="relative w-full max-w-lg max-h-[85dvh] overflow-y-auto rounded-2xl border border-zinc-700 bg-zinc-900 shadow-2xl">
         <header class="flex items-start justify-between gap-4 border-b border-zinc-800 px-5 py-4">
           <div>
             <p id="release-announcement-version" class="text-xs font-bold uppercase tracking-wider text-blue-400"></p>
             <h2 id="release-announcement-title" class="mt-1 text-lg font-bold text-zinc-100"></h2>
           </div>
-          <button id="release-announcement-close" type="button" class="shrink-0 rounded-lg p-2 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100" aria-label="Close announcement">
+          <button id="release-announcement-close" type="button" class="shrink-0 rounded-lg p-2 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100" aria-label={m.common_close()}>
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m18 6-12 12"/><path d="m6 6 12 12"/></svg>
           </button>
         </header>
@@ -901,6 +902,10 @@ const bottomNavItem = (active: boolean) =>
 
   {user && (
     <script>
+      import { m } from '../paraglide/messages.js';
+      import { formatDate } from '../lib/format';
+      import { parseWatchlistNotification } from '../lib/watchlist-notification.js';
+
       // ── Notifications bell ─────────────────────────────────────────────────────
       const notifBtn = document.getElementById('notif-btn');
       const notifPanel = document.getElementById('notif-panel');
@@ -935,33 +940,42 @@ const bottomNavItem = (active: boolean) =>
 
       const timeAgo = (iso: string) => {
         const secs = Math.max(0, (Date.now() - new Date(iso.endsWith('Z') ? iso : iso + 'Z').getTime()) / 1000);
-        if (secs < 60) return 'just now';
-        if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
-        if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
-        return `${Math.floor(secs / 86400)}d ago`;
+        if (secs < 60) return m.notifications_just_now();
+        if (secs < 3600) return m.notifications_ago_minutes({ count: Math.floor(secs / 60) });
+        if (secs < 86400) return m.notifications_ago_hours({ count: Math.floor(secs / 3600) });
+        return m.notifications_ago_days({ count: Math.floor(secs / 86400) });
       };
 
       const describe = (n: NotifItem) => {
-        if (n.type === 'friend_request') return { text: ' sent you a friend request', href: '/friends' };
+        if (n.type === 'friend_request') return { text: m.notifications_friend_request(), href: '/friends' };
         if (n.type === 'release_announcement') {
           return {
-            text: ` announced version ${n.announcement?.version ?? ''}: ${n.announcement?.title ?? 'New release'}`,
+            text: m.notifications_announced_release({
+              version: n.announcement?.version ?? '',
+              title: n.announcement?.title ?? m.notifications_new_release(),
+            }),
             href: '#',
           };
         }
-        const m = n.media;
+        const media = n.media;
         if (n.type === 'watchlist_release' || n.type === 'watchlist_streaming') {
-          return { text: `: ${n.comment ?? ''}`, href: m?.link ?? '/watchlist' };
+          const alert = parseWatchlistNotification(n.type, n.comment ?? '');
+          const text = alert.kind === 'release'
+            ? m.notifications_watchlist_release({ date: formatDate(alert.date, { dateStyle: 'long', timeZone: 'UTC' }) })
+            : alert.kind === 'streaming'
+              ? m.notifications_watchlist_streaming({ providers: alert.providers })
+              : alert.text;
+          return { text: `: ${text}`, href: media?.link ?? '/watchlist' };
         }
         const actorId = n.actor?.id;
+        const rating = n.rating != null ? ` (${n.rating}/10)` : '';
         if (n.type === 'friend_media_share') {
-          return { text: ` shared ${m?.title ?? 'a title'} with you${n.rating != null ? ` (${n.rating}/10)` : ''}`, href: m?.link ?? `/profile/${actorId}` };
+          return { text: m.notifications_title_shared({ title: media?.title ?? m.notifications_a_title(), rating }), href: media?.link ?? `/profile/${actorId}` };
         }
-        const rated = n.rating != null ? ` (${n.rating}/10)` : '';
-        let what = m?.title ?? 'a title';
-        if (m?.type === 'episode' && m.season_number != null && m.episode_number != null) what += ` S${m.season_number}E${m.episode_number}`;
-        else if (m?.type === 'series' && m.season_number != null) what += ` – Season ${m.season_number}`;
-        return { text: ` rated ${what}${rated}`, href: m?.link ?? `/profile/${actorId}` };
+        let what = media?.title ?? m.notifications_a_title();
+        if (media?.type === 'episode' && media.season_number != null && media.episode_number != null) what += ` S${media.season_number}E${media.episode_number}`;
+        else if (media?.type === 'series' && media.season_number != null) what += ` – ${m.notifications_season()} ${media.season_number}`;
+        return { text: m.notifications_rated({ what, rating }), href: media?.link ?? `/profile/${actorId}` };
       };
 
       const renderNotifications = (items: NotifItem[]) => {
@@ -1004,7 +1018,7 @@ const bottomNavItem = (active: boolean) =>
           msg.className = 'block text-zinc-300';
           const who = document.createElement('span');
           who.className = 'font-bold text-zinc-100';
-          who.textContent = n.actor?.display_name ?? (n.type === 'release_announcement' ? 'Scrob' : n.media?.title ?? 'Watchlist');
+          who.textContent = n.actor?.display_name ?? (n.type === 'release_announcement' ? 'Scrob' : n.media?.title ?? m.nav_watchlist());
           msg.append(who, text);
           const when = document.createElement('span');
           when.className = 'block text-xs text-zinc-500 mt-0.5';
@@ -1041,8 +1055,8 @@ const bottomNavItem = (active: boolean) =>
               return btn;
             };
             actions.append(
-              respond('✓', 'Accept friend request', 'border-green-500/30 bg-green-500/10 text-green-400 hover:bg-green-500/20', 'POST', '/accept'),
-              respond('✕', 'Decline friend request', 'border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20', 'DELETE', ''),
+              respond('✓', m.notifications_accept_friend(), 'border-green-500/30 bg-green-500/10 text-green-400 hover:bg-green-500/20', 'POST', '/accept'),
+              respond('✕', m.notifications_decline_friend(), 'border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20', 'DELETE', ''),
             );
             li.append(a, actions);
           } else {

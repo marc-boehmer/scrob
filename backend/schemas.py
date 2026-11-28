@@ -1,7 +1,7 @@
 import re
 from pydantic import BaseModel, EmailStr, Field, SecretStr, field_validator, model_validator, ConfigDict
 import re
-from typing import Optional
+from typing import Optional, Literal
 from datetime import datetime
 from models.base import UserRole, MediaType, PrivacyLevel
 
@@ -15,6 +15,7 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str
+    ui_language: Optional[Literal["en", "de", "fr", "pt-PT"]] = None
 
 class User(UserBase):
     # Overrides UserBase's EmailStr - this is a response model, serializing
@@ -44,6 +45,7 @@ class UserLogin(BaseModel):
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
+    ui_language: Optional[Literal["en", "de", "fr", "pt-PT"]] = None
 
 
 class ChangeEmailRequest(BaseModel):
