@@ -73,6 +73,7 @@ class WatchlistAlertTests(unittest.IsolatedAsyncioTestCase):
             tmdb_api_key=None,
             email_watchlist_release_dates=True,
             email_watchlist_streaming=True,
+            ui_language="de",
         )
         profile = SimpleNamespace(country="US", streaming_services=[])
         db = SimpleNamespace(
@@ -104,10 +105,11 @@ class WatchlistAlertTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             events,
             [
-                "Theatrical release date reached: October 31, 2026",
-                "Now available to stream on Provider B",
+                "Kinostart erreicht: 31. Oktober 2026",
+                "Jetzt zum Streamen verfügbar bei Provider B",
             ],
         )
+        self.assertEqual(send_email.await_args.kwargs["language"], "de")
         self.assertEqual(state.streaming_provider_ids, [8, 9])
         self.assertIsNotNone(state.release_notified_at)
         db.commit.assert_awaited_once()
@@ -115,6 +117,10 @@ class WatchlistAlertTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [(n.type, n.actor_id, n.shared_media_link) for n in notifications],
             [("watchlist_release", None, "/movie/123"), ("watchlist_streaming", None, "/movie/123")],
+        )
+        self.assertEqual(
+            [n.shared_comment for n in notifications],
+            ["Theatrical release date reached: October 31, 2026", "Now available to stream on Provider B"],
         )
 
         second_db = SimpleNamespace(

@@ -8,13 +8,14 @@ import { formatDate } from "../lib/format";
 import { m } from "../paraglide/messages.js";
 import { getViewerTimeZone } from "../lib/viewerTimeZone";
 import { formatWatchTime } from "../lib/media-format";
+import { use24HourTime } from "../lib/timeFormat";
 
 const { token } = Astro.locals;
 Astro.response.headers.set("Cache-Control", "no-store");
 const page = Number(Astro.url.searchParams.get("page") || 1);
 const type = Astro.url.searchParams.get("type") || undefined;
 const q = Astro.url.searchParams.get("q") || "";
-const use24h = Astro.cookies.get("time_format_24h")?.value === "true";
+const use24h = use24HourTime(Astro.locals.settings?.time_format_24h, Astro.cookies.get("time_format_24h")?.value);
 const timeZone = getViewerTimeZone(Astro.cookies);
 const condenseByShow = Astro.locals.settings?.condense_history_by_show === true;
 

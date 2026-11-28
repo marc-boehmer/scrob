@@ -14,7 +14,7 @@ from models.friendship import Friendship
 from models.media import Media
 from models.notification import Notification
 from models.release_announcement import ReleaseAnnouncement
-from models.users import User
+from models.users import User, UserSettings
 from routers.friends import _people
 
 router = APIRouter()
@@ -22,6 +22,72 @@ router = APIRouter()
 LIST_LIMIT = 30
 WATCHLIST_TYPES = {WATCHLIST_RELEASE, WATCHLIST_STREAMING}
 RELEASE_ANNOUNCEMENT = "release_announcement"
+
+GERMAN_RELEASE_ANNOUNCEMENTS = {
+    "Release notes are now in Scrob": (
+        "Scrob now has in-app release announcements. When a new version is deployed, "
+        "you can read what's changed by opening its notification from the bell menu.",
+        "Versionshinweise direkt in Scrob",
+        "Scrob zeigt Versionshinweise jetzt direkt in der App. Wenn eine neue Version "
+        "veröffentlicht wird, kannst du die Änderungen über die Benachrichtigung im Glockenmenü lesen.",
+    ),
+    "Filter by a range of release years": (
+        "The Year filter now lets you type a From and To year to select a whole time span "
+        "at once, for example 1990 to 1999. You can still pick individual years too.",
+        "Nach einem Zeitraum von Veröffentlichungsjahren filtern",
+        "Im Jahresfilter kannst du jetzt ein Start- und ein Endjahr eingeben, um einen "
+        "ganzen Zeitraum auszuwählen, zum Beispiel 1990 bis 1999. Einzelne Jahre kannst "
+        "du weiterhin ebenfalls auswählen.",
+    ),
+    "Translations, saved filters, statistics and richer item pages": (
+        "Scrob can now be shown in French and Portuguese (choose it in Profile Settings). "
+        "The Explore filters gained saved filters, excluding genres or languages and a "
+        "my-rating filter. There are new statistics pages, and movie and show pages now "
+        "show watch stats, release status and where to watch.",
+        "Übersetzungen, gespeicherte Filter, Statistiken und ausführlichere Detailseiten",
+        "Scrob lässt sich jetzt auf Französisch und Portugiesisch anzeigen "
+        "(auswählbar in den Profileinstellungen). Die Entdecken-Filter können jetzt "
+        "gespeichert werden; außerdem kannst du Genres oder Sprachen ausschließen "
+        "und nach deiner eigenen Bewertung filtern. Es gibt neue Statistikseiten. "
+        "Film- und Serienseiten zeigen jetzt Wiedergabestatistiken, den "
+        "Veröffentlichungsstatus und wo du den jeweiligen Titel ansehen kannst.",
+    ),
+    "Language setting moved, safer email changes": (
+        "The interface language now lives in Profile Settings under Interface language. "
+        "Changing your email address now sends a confirmation link to the new address, "
+        "and the address only changes once you confirm it. Your Watchlist, friends and "
+        "privacy settings work as before.",
+        "Spracheinstellung verschoben, sicherere E-Mail-Änderungen",
+        "Die Sprache der Oberfläche findest du jetzt in den Profileinstellungen unter "
+        "„Sprache der Oberfläche“. Beim Ändern deiner E-Mail-Adresse wird ein "
+        "Bestätigungslink an die neue Adresse gesendet. Die Adresse wird erst nach "
+        "deiner Bestätigung geändert. Deine Watchlist, Freunde und "
+        "Datenschutzeinstellungen funktionieren weiterhin wie bisher.",
+    ),
+    "German interface translation": (
+        "Scrob is now available in German. Choose Deutsch under "
+        "Profile Settings -> Interface language.",
+        "Deutsche Oberfläche",
+        "Scrob ist jetzt auf Deutsch verfügbar. Wähle „Deutsch“ in den Profileinstellungen "
+        "unter „Sprache der Oberfläche“.",
+    ),
+}
+
+
+def _localize_release_announcement(user_locale: str | None, title: str, body: str) -> tuple[str, str]:
+    if (user_locale or "").split("-", 1)[0].lower() != "de":
+        return title, body
+
+    sections = body.split("\n\n")
+    entry = GERMAN_RELEASE_ANNOUNCEMENTS.get(title)
+    if entry and sections[0] == entry[0]:
+        title, sections[0] = entry[1], entry[2]
+    for i in range(1, len(sections)):
+        for original_title, (original_body, translated_title, translated_body) in GERMAN_RELEASE_ANNOUNCEMENTS.items():
+            if sections[i] == f"{original_title}: {original_body}":
+                sections[i] = f"{translated_title}: {translated_body}"
+                break
+    return title, "\n\n".join(sections)
 
 
 class MediaShareRequest(BaseModel):
@@ -103,6 +169,10 @@ async def _unread_count(db: AsyncSession, user_id: int) -> int:
 
 @router.get("")
 async def list_notifications(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    settings = (await db.execute(
+        select(UserSettings).where(UserSettings.user_id == current_user.id)
+    )).scalar_one_or_none()
+    ui_locale = settings.ui_language if settings else None
     rows = (await db.execute(
         select(Notification)
         .where(Notification.user_id == current_user.id)
@@ -133,6 +203,12 @@ async def list_notifications(current_user: User = Depends(get_current_user), db:
             continue
         m = media.get(n.media_id) if n.media_id else None
         announcement = announcements.get(n.release_announcement_id)
+        announcement_title = announcement.title if announcement else None
+        announcement_body = announcement.body if announcement else None
+        if announcement_title is not None and announcement_body is not None:
+            announcement_title, announcement_body = _localize_release_announcement(
+                ui_locale, announcement_title, announcement_body
+            )
         items.append({
             "id": n.id,
             "type": n.type,
@@ -144,8 +220,8 @@ async def list_notifications(current_user: User = Depends(get_current_user), db:
             "media": _notification_media(n, m),
             "announcement": {
                 "version": announcement.version,
-                "title": announcement.title,
-                "body": announcement.body,
+                "title": announcement_title,
+                "body": announcement_body,
             } if announcement else None,
         })
     return {"notifications": items, "unread_count": await _unread_count(db, current_user.id)}

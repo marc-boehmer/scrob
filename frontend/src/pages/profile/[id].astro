@@ -125,7 +125,7 @@ function starFill(rating: number, star: number): "full" | "half" | "empty" {
           </div>
           <h1 class="text-3xl font-black text-zinc-100 tracking-tight mb-2">{profile.display_name}</h1>
           <p class="text-zinc-400 font-medium">
-            {profile.privacy_level === "private" ? "This profile is private." : "This profile is visible to friends only."}
+            {profile.privacy_level === "private" ? m.profile_private() : m.profile_friends_only()}
           </p>
           {currentUser && currentUser.id !== profile.id && (
             <div class="mt-6 flex items-center justify-center gap-2">

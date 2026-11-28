@@ -34,6 +34,7 @@ from core.security import (
 )
 from core.config import settings as app_settings
 from core.email import send_activation_email, send_email_change_email, send_password_reset_email
+from core.email_language import get_user_email_language
 from core.url_validator import validate_service_url
 from core.limiter import limiter
 from core.backup import restore_backup
@@ -129,7 +130,8 @@ async def forgot_password(request: Request, body: schemas.ForgotPasswordRequest,
         db.add(PasswordResetToken(user_id=user.id, token=token))
         await db.commit()
         try:
-            await send_password_reset_email(user.email, token)
+            language = await get_user_email_language(db, user.id) or body.ui_language
+            await send_password_reset_email(user.email, token, language=language)
         except Exception as exc:
             logger.error("Failed to send password reset email to %s: %s", user.email, exc)
 
@@ -219,6 +221,8 @@ async def register(request: Request, user_in: schemas.UserCreate, db: AsyncSessi
     )
     db.add(new_user)
     await db.flush()  # get new_user.id before commit
+    if user_in.ui_language:
+        db.add(UserSettings(user_id=new_user.id, ui_language=user_in.ui_language))
 
     if app_settings.require_email_validation:
         token = secrets.token_urlsafe(32)
@@ -227,7 +231,7 @@ async def register(request: Request, user_in: schemas.UserCreate, db: AsyncSessi
         await db.commit()
         await db.refresh(new_user, attribute_names=["profile"])
         try:
-            await send_activation_email(new_user.email, token)
+            await send_activation_email(new_user.email, token, language=user_in.ui_language)
         except Exception as exc:
             logger.error("Failed to send activation email to %s: %s", new_user.email, exc)
     else:
@@ -994,7 +998,8 @@ async def change_email(
     db.add(EmailActivation(user_id=current_user.id, email=new_email, token=token))
     await db.commit()
     try:
-        await send_email_change_email(new_email, token)
+        language = await get_user_email_language(db, current_user.id)
+        await send_email_change_email(new_email, token, language=language)
     except Exception as exc:
         logger.error("Failed to send email change confirmation to %s: %s", new_email, exc)
         raise HTTPException(status_code=502, detail="Could not send the confirmation email")

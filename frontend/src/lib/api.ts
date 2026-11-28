@@ -700,6 +700,8 @@ export interface ConnectionStatus {
 export interface MediaItem {
   id: number | null;
   tmdb_id: number | null;
+  // For an episode, tvdb_id is the TVDB episode id. A TVDB-only episode
+  // has no tmdb_id, so actions use its local id (media_id) instead.
   tvdb_id?: number | null;
   type: MediaType;
   title: string;
@@ -732,11 +734,6 @@ export interface MediaItem {
   show_tvdb_id?: number | null;
   show_poster_path?: string | null;
   show_backdrop_path?: string | null;
-  // The item's own provider ids besides tmdb_id. For an episode, tvdb_id is
-  // the TVDB *episode* id. A TVDB-only episode has tvdb_id and no tmdb_id;
-  // actions on it go through its local `id` (media_id) instead.
-  tvdb_id?: number | null;
-  imdb_id?: string | null;
   // True when this episode has no real TMDB counterpart and was enriched
   // from TVDB instead (see #101) — its season/episode numbers are TVDB's
   // raw numbers, not TMDB's, regardless of whether show_tmdb_id is set.
@@ -1395,8 +1392,8 @@ export const api = {
       get<{ has_users: boolean }>("/auth/has-users"),
     activateEmail: (token: string) =>
       post<{ success: boolean; email_changed: boolean }>(`/auth/activate/${token}`, undefined),
-    forgotPassword: (email: string) =>
-      post<{ message: string }>("/auth/forgot-password", { email }),
+    forgotPassword: (email: string, ui_language?: string) =>
+      post<{ message: string }>("/auth/forgot-password", { email, ui_language }),
     resetPassword: (token: string, new_password: string) =>
       post<{ message: string }>(`/auth/reset-password/${token}`, { new_password }),
     renewSession: (token: string) =>
