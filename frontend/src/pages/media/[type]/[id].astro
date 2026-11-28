@@ -375,6 +375,15 @@ const shareDescription = isMovie
                 {isMovie && (
                   <TrailerButton tmdbId={item.tmdb_id} mediaType="movie" title={item.title} year={year} />
                 )}
+                {isMovie && (
+                  <ShareMedia
+                    title={item.title}
+                    mediaType="movie"
+                    tmdbId={item.tmdb_id}
+                    href={`/movie/${item.tmdb_id}`}
+                    authenticated={!!user}
+                  />
+                )}
               </div>
             )}
 
