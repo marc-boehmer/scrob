@@ -15,7 +15,7 @@ from models.ratings import Rating
 from models.show import Show as ShowModel
 
 from .common import _check_profile_access
-from core.media_runtime import effective_runtime_expression
+from core.media_runtime import effective_watch_time_expression
 from .top_media import _top_media, _watch_date_filters
 
 
@@ -69,23 +69,26 @@ async def get_user_stats(
     )
     shows_watched = shows_q.scalar_one()
 
-    effective_runtime = effective_runtime_expression()
+    effective_watch_time = effective_watch_time_expression()
     watch_time_q = await db.execute(
-        select(func.coalesce(func.sum(effective_runtime), 0))
+        select(func.coalesce(func.sum(effective_watch_time), 0))
+        .select_from(Media)
         .join(WatchEvent, WatchEvent.media_id == Media.id)
         .where(WatchEvent.user_id == user_id, Media.media_type.in_(["movie", "episode"]), *date_filters)
     )
     total_watch_minutes = watch_time_q.scalar_one() or 0
 
     movie_watch_time_q = await db.execute(
-        select(func.coalesce(func.sum(effective_runtime), 0))
+        select(func.coalesce(func.sum(effective_watch_time), 0))
+        .select_from(Media)
         .join(WatchEvent, WatchEvent.media_id == Media.id)
         .where(WatchEvent.user_id == user_id, Media.media_type == "movie", *date_filters)
     )
     movie_watch_minutes = movie_watch_time_q.scalar_one() or 0
 
     show_watch_time_q = await db.execute(
-        select(func.coalesce(func.sum(effective_runtime), 0))
+        select(func.coalesce(func.sum(effective_watch_time), 0))
+        .select_from(Media)
         .join(WatchEvent, WatchEvent.media_id == Media.id)
         .where(WatchEvent.user_id == user_id, Media.media_type == "episode", *date_filters)
     )
@@ -120,8 +123,9 @@ async def get_user_stats(
         select(
             activity_expr.label("period"),
             Media.media_type,
-            func.coalesce(func.sum(effective_runtime), 0).label("minutes"),
+            func.coalesce(func.sum(effective_watch_time), 0).label("minutes"),
         )
+        .select_from(Media)
         .join(WatchEvent, WatchEvent.media_id == Media.id)
         .where(WatchEvent.user_id == user_id, Media.media_type.in_(["movie", "episode"]), *dated_event_filters)
         .group_by(activity_expr, Media.media_type)

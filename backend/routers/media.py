@@ -5621,6 +5621,12 @@ async def get_media_details(
         state_item: dict = {"tmdb_id": tmdb_id, "type": type.value}
         raw_coll = data.get("belongs_to_collection") if type == MediaType.movie else None
 
+        # Keep the stored runtime in sync so watch-time stats count this title.
+        fetched_runtime = data.get("runtime")
+        if media and not media.runtime and isinstance(fetched_runtime, int) and fetched_runtime > 0:
+            media.runtime = fetched_runtime
+            await db.commit()
+
         # DB operations must run sequentially — async session doesn't support concurrent use
         await enrich_with_state(db, effective_user_id, [state_item])
         watch_time_minutes = (await get_watch_stats(

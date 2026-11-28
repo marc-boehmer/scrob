@@ -42,14 +42,16 @@ const groupedHistory = history.results.reduce<Record<string, WatchEvent[]>>((acc
 
 const dates = Object.keys(groupedHistory);
 
-// #484: total watch time per day, summed from each play's runtime. Plays with
-// no known runtime add nothing, and a day with no known runtime at all (and
-// the undated bucket) shows no total rather than "0m".
+// Total watch time per day, including imported play counts stored on a single
+// event. Plays with no known runtime add nothing, and undated history has no total.
 const watchTimeByDate: Record<string, string | null> = {};
 for (const date of dates) {
   watchTimeByDate[date] = date === m.history_date_unknown()
     ? null
-    : formatWatchTime(groupedHistory[date].reduce((sum, event) => sum + (event.media.runtime ?? 0), 0));
+    : formatWatchTime(groupedHistory[date].reduce(
+        (sum, event) => sum + (event.media.runtime ?? 0) * Math.max(1, event.play_count ?? 1),
+        0,
+      ));
 }
 
 // #391: within a date, collapse consecutive plays of the same show (a binge

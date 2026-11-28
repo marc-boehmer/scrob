@@ -56,8 +56,12 @@ class TopMediaQueryTests(unittest.IsolatedAsyncioTestCase):
             tmdb_data={"runtime": tmdb_runtime} if tmdb_runtime is not None else None,
         )
 
-    def _movie(self, mid, title, runtime=100):
-        return Media(id=mid, tmdb_id=mid, media_type=MediaType.movie, title=title, poster_path=f"/{mid}.jpg", runtime=runtime)
+    def _movie(self, mid, title, runtime=100, tmdb_runtime=None):
+        return Media(
+            id=mid, tmdb_id=mid, media_type=MediaType.movie, title=title,
+            poster_path=f"/{mid}.jpg", runtime=runtime,
+            tmdb_data={"runtime": tmdb_runtime} if tmdb_runtime is not None else None,
+        )
 
     async def _top(self, **kwargs):
         async with self.Session() as db:
@@ -140,6 +144,33 @@ class TopMediaQueryTests(unittest.IsolatedAsyncioTestCase):
         shows, _ = await self._top()
 
         self.assertEqual(shows[0]["minutes"], 42)
+
+    async def test_repeated_episode_plays_include_each_runtime(self):
+        await self._add(
+            shows=[(10, 10, None)],
+            media=[self._episode(1, 10, runtime=42)],
+            plays=[],
+        )
+        async with self.Session() as db:
+            event = WatchEvent(
+                user_id=1, media_id=1, watched_at=datetime(2026, 1, 2),
+                completed=True, play_count=3,
+            )
+            db.add(event)
+            await db.commit()
+            shows, _ = await _top_media(db, 1, [WatchEvent.completed == True])  # noqa: E712
+
+        self.assertEqual(shows[0]["minutes"], 126)
+
+    async def test_string_runtime_falls_back_to_tmdb_data(self):
+        await self._add(
+            media=[self._movie(1, "Cached runtime", runtime=None, tmdb_runtime="123")],
+            plays=[(1, 1, 0, True)],
+        )
+
+        _, movies = await self._top()
+
+        self.assertEqual(movies[0]["minutes"], 123)
 
     async def test_episodes_without_a_show_are_not_counted_as_shows(self):
         await self._add(media=[self._episode(1, None)], plays=[(1, 1, 0, True)])

@@ -48,6 +48,10 @@ try {
           {m.nav_profile()}
         </a>
         <h1 class="page-title">{m.nav_statistics()}</h1>
+        <a href={`/stats/${id}/rewind`} class="inline-flex items-center gap-2 mt-4 px-4 py-2 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/20 text-sky-300 text-sm font-bold rounded-xl transition">
+          {m.stats_rewind()}
+          <span aria-hidden="true">→</span>
+        </a>
       </div>
 
       <div id="stats-content" class="space-y-10" data-user-id={id} data-token={token ?? ""}>
